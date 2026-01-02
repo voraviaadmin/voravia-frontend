@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "Voravia",
+    "slug": "voravia",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "voravia",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#EAF8F7"
+    },
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "health.voravia.voravia"
+    },
+    "android": {
+      "package": "health.voravia.voravia",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#EAF8F7"
+      }
+    },
+    "web": {
+      "output": "static"
+    },
+    "plugins": [
+      "expo-router"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "f9bc79fc-83e2-4d89-bdc0-081bf70e74d2"
+      }
+    }
+  }
+}
