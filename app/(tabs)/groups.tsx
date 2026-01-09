@@ -1,11 +1,11 @@
 import React from "react";
 import { View, Text, StyleSheet } from "react-native";
 
-export default function ProfileScreen() {
+export default function GroupsScreen() {
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Profile</Text>
-      <Text style={styles.sub}>Health profile + settings</Text>
+      <Text style={styles.title}>Groups</Text>
+      <Text style={styles.sub}>Individual • Family • Corporate (future)</Text>
     </View>
   );
 }
