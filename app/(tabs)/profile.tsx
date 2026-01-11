@@ -1,217 +1,332 @@
-import React, { useEffect, useState } from "react";
-import { View, Text, StyleSheet, Pressable, TextInput, Switch, Platform, ScrollView } from "react-native";
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  Pressable,
+  ScrollView,
+  TextInput,
+  Platform,
+} from "react-native";
+
+import { getSavedProfile, saveProfile } from "@/src/storage/voraviaStorage";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-export type Profile = {
-  name: string;
-  goal: "Lose" | "Maintain" | "Gain";
-  diet: "None" | "Vegetarian" | "Vegan" | "Keto" | "Halal";
-  allergies: string;
+const PROFILE_VERSION_KEY = "voravia:profileVersion";
+
+type Goal = "Lose" | "Maintain" | "Gain";
+
+export type HealthProfile = {
   diabetes: boolean;
   htn: boolean;
   nafld: boolean;
-  cuisines: string[];
+  goal: Goal;
+  cuisines: string[]; // cuisines[0] is PRIMARY
 };
 
-export const PROFILE_STORAGE_KEY = "voravia_profile_v1";
-export const CUISINES = ["Indian", "Mexican", "Chinese", "Italian", "Thai", "Japanese", "Mediterranean"];
+const BASE_CUISINES = [
+  "Indian",
+  "Mexican",
+  "Chinese",
+  "Italian",
+  "Thai",
+  "Japanese",
+  "Mediterranean",
+  "American",
+];
+
+const defaultProfile: HealthProfile = {
+  diabetes: false,
+  htn: false,
+  nafld: false,
+  goal: "Maintain",
+  cuisines: ["Indian"],
+};
+
+function uniqCaseInsensitive(arr: string[]) {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const x of arr) {
+    const v = (x || "").trim();
+    if (!v) continue;
+    const k = v.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(v);
+  }
+  return out;
+}
+
+function coerceProfile(raw: any): HealthProfile {
+  const p = raw ?? {};
+  const cuisines =
+    Array.isArray(p.cuisines) && p.cuisines.every((x: any) => typeof x === "string")
+      ? uniqCaseInsensitive(p.cuisines)
+      : defaultProfile.cuisines;
+
+  return {
+    diabetes: !!p.diabetes,
+    htn: !!p.htn,
+    nafld: !!p.nafld,
+    goal: (p.goal as Goal) || defaultProfile.goal,
+    cuisines: cuisines.length ? cuisines : defaultProfile.cuisines,
+  };
+}
 
 export default function ProfileScreen() {
-  const [loading, setLoading] = useState(true);
+  const [profile, setProfile] = useState<HealthProfile>(defaultProfile);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
+  const [customCuisine, setCustomCuisine] = useState("");
 
-  const [profile, setProfile] = useState<Profile>({
-    name: "",
-    goal: "Maintain",
-    diet: "None",
-    allergies: "",
-    diabetes: false,
-    htn: false,
-    nafld: false,
-    cuisines: ["Indian"],
-  });
+  const cuisineOptions = useMemo(() => {
+    return uniqCaseInsensitive([...BASE_CUISINES, ...(profile.cuisines || [])]);
+  }, [profile.cuisines]);
+
+  const persist = async (next: HealthProfile) => {
+    const cleaned: HealthProfile = {
+      ...next,
+      cuisines: uniqCaseInsensitive(next.cuisines || []),
+    };
+
+    // Ensure at least one cuisine exists
+    if (!cleaned.cuisines.length) cleaned.cuisines = ["Indian"];
+
+    setProfile(cleaned);
+    await saveProfile(cleaned);
+
+    // Bump version so EatOut refreshes on focus
+    await AsyncStorage.setItem(PROFILE_VERSION_KEY, String(Date.now()));
+
+    setSavedMsg("Saved");
+    setTimeout(() => setSavedMsg(null), 900);
+  };
 
   useEffect(() => {
     (async () => {
       try {
-        const raw = await AsyncStorage.getItem(PROFILE_STORAGE_KEY);
-        if (raw) setProfile(JSON.parse(raw));
-      } finally {
-        setLoading(false);
+        const stored = await getSavedProfile();
+        if (stored) setProfile(coerceProfile(stored));
+      } catch {
+        // ignore
       }
     })();
   }, []);
 
-  const save = async () => {
-    setSavedMsg(null);
-    await AsyncStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile));
-    setSavedMsg("Saved ✅");
-    setTimeout(() => setSavedMsg(null), 1200);
+  // ✅ When turning ON a cuisine, make it PRIMARY (index 0)
+  const setCuisinePrimary = (c: string) => {
+    const cTrim = c.trim();
+    const rest = profile.cuisines.filter((x) => x.toLowerCase() !== cTrim.toLowerCase());
+    persist({ ...profile, cuisines: [cTrim, ...rest] });
   };
 
   const toggleCuisine = (c: string) => {
-    setProfile((p) => {
-      const has = p.cuisines.includes(c);
-      const cuisines = has ? p.cuisines.filter((x) => x !== c) : [...p.cuisines, c];
-      return { ...p, cuisines };
-    });
+    const has = profile.cuisines.some((x) => x.toLowerCase() === c.toLowerCase());
+    if (has) {
+      const next = profile.cuisines.filter((x) => x.toLowerCase() !== c.toLowerCase());
+      persist({ ...profile, cuisines: next.length ? next : ["Indian"] });
+    } else {
+      // turn ON → make primary
+      setCuisinePrimary(c);
+    }
   };
 
-  const chip = (label: string, active: boolean, onPress: () => void) => (
-    <Pressable key={label} style={[styles.chip, active && styles.chipActive]} onPress={onPress}>
-      <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
-    </Pressable>
-  );
+  const addCustomCuisine = () => {
+    const c = customCuisine.trim();
+    if (!c) return;
+    setCustomCuisine("");
+    setCuisinePrimary(c); // ✅ new custom becomes primary (matches your expectation)
+  };
 
-  const goalOptions: Profile["goal"][] = ["Lose", "Maintain", "Gain"];
-  const dietOptions: Profile["diet"][] = ["None", "Vegetarian", "Vegan", "Keto", "Halal"];
-
-  if (loading) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.title}>Profile</Text>
-        <Text style={styles.sub}>Loading…</Text>
-      </View>
-    );
-  }
+  const header = useMemo(() => {
+    const active = [
+      profile.diabetes ? "Diabetes" : null,
+      profile.htn ? "HTN" : null,
+      profile.nafld ? "NAFLD" : null,
+      `Goal: ${profile.goal}`,
+      `Primary cuisine: ${profile.cuisines[0] || "Indian"}`,
+    ].filter(Boolean);
+    return active.join(" • ");
+  }, [profile]);
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 30 }}>
+    <ScrollView style={styles.page} contentContainerStyle={styles.content}>
       <Text style={styles.title}>Profile</Text>
-      <Text style={styles.sub}>Used to personalize restaurant search + food scoring</Text>
+      <Text style={styles.sub}>Health toggles + preferences</Text>
 
       <View style={styles.card}>
-        <Text style={styles.label}>Name</Text>
-        <TextInput
-          value={profile.name}
-          onChangeText={(name) => setProfile((p) => ({ ...p, name }))}
-          placeholder="Your name"
-          placeholderTextColor="#7A8E91"
-          style={styles.input}
+        <Text style={styles.cardTitle}>Health</Text>
+        <Text style={styles.cardSub}>{header}</Text>
+
+        <ToggleRow
+          label="Diabetes"
+          value={profile.diabetes}
+          onPress={() => persist({ ...profile, diabetes: !profile.diabetes })}
+        />
+        <ToggleRow
+          label="High Blood Pressure"
+          value={profile.htn}
+          onPress={() => persist({ ...profile, htn: !profile.htn })}
+        />
+        <ToggleRow
+          label="Fatty Liver"
+          value={profile.nafld}
+          onPress={() => persist({ ...profile, nafld: !profile.nafld })}
         />
 
-        <Text style={[styles.label, { marginTop: 14 }]}>Goal</Text>
-        <View style={styles.rowWrap}>
-          {goalOptions.map((g) => chip(g, profile.goal === g, () => setProfile((p) => ({ ...p, goal: g }))))}
-        </View>
-
-        <Text style={[styles.label, { marginTop: 14 }]}>Diet preference</Text>
-        <View style={styles.rowWrap}>
-          {dietOptions.map((d) => chip(d, profile.diet === d, () => setProfile((p) => ({ ...p, diet: d }))))}
-        </View>
-
-        <Text style={[styles.label, { marginTop: 14 }]}>Allergies (comma separated)</Text>
-        <TextInput
-          value={profile.allergies}
-          onChangeText={(allergies) => setProfile((p) => ({ ...p, allergies }))}
-          placeholder="e.g., peanuts, dairy, gluten"
-          placeholderTextColor="#7A8E91"
-          style={styles.input}
-        />
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Health conditions</Text>
-
-        <View style={styles.switchRow}>
-          <Text style={styles.switchLabel}>Diabetes</Text>
-          <Switch value={profile.diabetes} onValueChange={(v) => setProfile((p) => ({ ...p, diabetes: v }))} />
-        </View>
-
-        <View style={styles.switchRow}>
-          <Text style={styles.switchLabel}>Hypertension</Text>
-          <Switch value={profile.htn} onValueChange={(v) => setProfile((p) => ({ ...p, htn: v }))} />
-        </View>
-
-        <View style={styles.switchRow}>
-          <Text style={styles.switchLabel}>Fatty liver (NAFLD)</Text>
-          <Switch value={profile.nafld} onValueChange={(v) => setProfile((p) => ({ ...p, nafld: v }))} />
+        <Text style={[styles.sectionLabel, { marginTop: 14 }]}>Goal</Text>
+        <View style={styles.chipRow}>
+          {(["Lose", "Maintain", "Gain"] as Goal[]).map((g) => (
+            <Chip
+              key={g}
+              label={g}
+              active={profile.goal === g}
+              onPress={() => persist({ ...profile, goal: g })}
+            />
+          ))}
         </View>
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Preferred cuisines</Text>
-        <Text style={styles.helper}>Restaurants will default to your first selected cuisine.</Text>
+        <Text style={styles.cardTitle}>Restaurant preferences</Text>
+        <Text style={styles.cardSub}>
+          Primary cuisine (first selected) drives the Eat Out default search.
+        </Text>
 
-        <View style={styles.rowWrap}>
-          {CUISINES.map((c) => chip(c, profile.cuisines.includes(c), () => toggleCuisine(c)))}
+        <Text style={styles.sectionLabel}>Cuisines</Text>
+        <View style={styles.chipRow}>
+          {cuisineOptions.map((c) => {
+            const isSelected = profile.cuisines.some((x) => x.toLowerCase() === c.toLowerCase());
+            const isPrimary = profile.cuisines[0]?.toLowerCase() === c.toLowerCase();
+            return (
+              <Chip
+                key={c}
+                label={isPrimary ? `${c} (Default)` : c}
+                active={isSelected}
+                onPress={() => toggleCuisine(c)}
+              />
+            );
+          })}
         </View>
+
+        <View style={{ height: 12 }} />
+        <Text style={styles.sectionLabel}>Add custom cuisine</Text>
+        <View style={styles.inputRow}>
+          <TextInput
+            value={customCuisine}
+            onChangeText={setCustomCuisine}
+            placeholder="e.g., Korean BBQ"
+            placeholderTextColor="#7b8794"
+            style={styles.input}
+            onSubmitEditing={addCustomCuisine}
+            returnKeyType="done"
+          />
+          <Pressable style={styles.addBtn} onPress={addCustomCuisine}>
+            <Text style={styles.addBtnText}>Add</Text>
+          </Pressable>
+        </View>
+
+        <View style={{ height: 10 }} />
+        <Text style={styles.smallMuted}>
+          Selected: {profile.cuisines.length ? profile.cuisines.join(", ") : "None"}
+        </Text>
       </View>
 
-      <Pressable style={({ pressed }) => [styles.primaryBtn, pressed && styles.pressed]} onPress={save}>
-        <Text style={styles.primaryBtnText}>Save profile</Text>
-      </Pressable>
-
-      {savedMsg ? <Text style={styles.saved}>{savedMsg}</Text> : null}
+      <View style={styles.footerRow}>
+        <Text style={styles.smallMuted}>
+          {Platform.OS === "web" ? "Web preview" : "Mobile preview"}
+        </Text>
+        {savedMsg ? <Text style={styles.saved}>{savedMsg}</Text> : null}
+      </View>
     </ScrollView>
   );
 }
 
+function ToggleRow({ label, value, onPress }: { label: string; value: boolean; onPress: () => void }) {
+  return (
+    <Pressable style={styles.toggleRow} onPress={onPress}>
+      <Text style={styles.toggleLabel}>{label}</Text>
+      <View style={[styles.pill, value ? styles.pillOn : styles.pillOff]}>
+        <Text style={styles.pillText}>{value ? "ON" : "OFF"}</Text>
+      </View>
+    </Pressable>
+  );
+}
+
+function Chip({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+  return (
+    <Pressable style={[styles.chip, active ? styles.chipOn : styles.chipOff]} onPress={onPress}>
+      <Text style={[styles.chipText, active ? styles.chipTextOn : styles.chipTextOff]}>{label}</Text>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#F5FAFB",
-    paddingTop: Platform.select({ ios: 64, android: 36, default: 36 }),
-    paddingHorizontal: 16,
-  },
-  title: { fontSize: 28, fontWeight: "900", color: "#0B2A2F" },
-  sub: { marginTop: 6, color: "#4A6468", fontWeight: "700" },
+  page: { flex: 1, backgroundColor: "#f6f7fb" },
+  content: { padding: 16, paddingBottom: 28 },
+  title: { fontSize: 34, fontWeight: "900", color: "#0b1220" },
+  sub: { marginTop: 6, fontSize: 14, color: "#52606d" },
 
   card: {
-    backgroundColor: "#FFFFFF",
+    marginTop: 14,
+    backgroundColor: "#0b1324",
     borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "#E4EFF1",
     padding: 14,
-    marginTop: 12,
-  },
-
-  label: { color: "#0B2A2F", fontWeight: "800" },
-  input: {
-    marginTop: 8,
     borderWidth: 1,
-    borderColor: "#E4EFF1",
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  cardTitle: { color: "white", fontSize: 16, fontWeight: "800" },
+  cardSub: { marginTop: 6, color: "rgba(255,255,255,0.7)", fontSize: 13 },
+
+  toggleRow: {
+    marginTop: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
     borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  toggleLabel: { color: "white", fontSize: 14, fontWeight: "700" },
+
+  pill: { paddingVertical: 6, paddingHorizontal: 10, borderRadius: 999 },
+  pillOn: { backgroundColor: "rgba(64,196,160,0.25)", borderWidth: 1, borderColor: "rgba(64,196,160,0.55)" },
+  pillOff: { backgroundColor: "rgba(255,255,255,0.08)", borderWidth: 1, borderColor: "rgba(255,255,255,0.12)" },
+  pillText: { color: "white", fontSize: 12, fontWeight: "800" },
+
+  sectionLabel: { marginTop: 8, color: "rgba(255,255,255,0.85)", fontSize: 12, fontWeight: "800" },
+
+  chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 10 },
+  chip: { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1 },
+  chipOn: { backgroundColor: "rgba(64,196,160,0.25)", borderColor: "rgba(64,196,160,0.55)" },
+  chipOff: { backgroundColor: "rgba(255,255,255,0.06)", borderColor: "rgba(255,255,255,0.10)" },
+  chipText: { fontSize: 13, fontWeight: "800" },
+  chipTextOn: { color: "white" },
+  chipTextOff: { color: "rgba(255,255,255,0.75)" },
+
+  inputRow: { flexDirection: "row", gap: 10, marginTop: 10, alignItems: "center" },
+  input: {
+    flex: 1,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    color: "#0B2A2F",
-    fontWeight: "700",
-    backgroundColor: "#F7FCFD",
-  },
-
-  sectionTitle: { fontSize: 16, fontWeight: "900", color: "#0B2A2F" },
-  helper: { marginTop: 4, color: "#4A6468", fontWeight: "600" },
-
-  rowWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 },
-
-  chip: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 999,
+    color: "white",
     borderWidth: 1,
-    borderColor: "#E4EFF1",
-    backgroundColor: "#F7FCFD",
+    borderColor: "rgba(255,255,255,0.12)",
   },
-  chipActive: { backgroundColor: "#0E7C86", borderColor: "#0E7C86" },
-  chipText: { fontWeight: "800", color: "#0B2A2F" },
-  chipTextActive: { color: "#FFFFFF" },
+  addBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: "rgba(64,196,160,0.25)",
+    borderWidth: 1,
+    borderColor: "rgba(64,196,160,0.55)",
+  },
+  addBtnText: { color: "white", fontWeight: "900" },
 
-  switchRow: {
-    marginTop: 12,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  switchLabel: { color: "#0B2A2F", fontWeight: "800" },
+  smallMuted: { color: "rgba(255,255,255,0.65)", fontSize: 12 },
 
-  primaryBtn: {
-    marginTop: 14,
-    backgroundColor: "#0E7C86",
-    paddingVertical: 14,
-    borderRadius: 14,
-    alignItems: "center",
-  },
-  primaryBtnText: { color: "#FFFFFF", fontWeight: "900" },
-  pressed: { opacity: 0.88 },
-  saved: { marginTop: 10, color: "#0E7C86", fontWeight: "900" },
+  footerRow: { marginTop: 14, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  saved: { color: "#11c29a", fontWeight: "900" },
 });

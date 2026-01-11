@@ -1,711 +1,401 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
+import { useLocalSearchParams } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-type Goal = "Lose" | "Maintain" | "Gain";
+import { getSavedProfile, saveProfile, getCachedRating, setCachedRating } from "@/src/storage/voraviaStorage";
+
+type Verdict = "FIT" | "MODERATE" | "AVOID";
 
 type Profile = {
   diabetes: boolean;
   htn: boolean;
   nafld: boolean;
-  goal: Goal;
+  goal: "Lose" | "Maintain" | "Gain";
+  cuisines?: string[];
 };
-
-type MenuItem = { name: string; description?: string | null; price?: string | null };
-type MenuSection = { name: string; items: MenuItem[] };
-
-type ExtractUploadResponse = {
-  source: "upload";
-  uploadKey: string;
-  sections: MenuSection[];
-};
-
-type Verdict = "FIT" | "MODERATE" | "AVOID";
 
 type RatedItem = {
   input: string;
-  name: string;
-  verdict: Verdict;
-  score: number; // 0-100
-  reasons: string[];
-  nutrition?: {
-    calories?: number;
-    carbsG?: number;
-    proteinG?: number;
-    fatG?: number;
-    fiberG?: number;
-    sugarG?: number;
-    sodiumMg?: number;
-    satFatG?: number;
-    confidence?: number;
-    assumptions?: string;
-  };
+  name?: string;
+  score?: number;
+  verdict?: Verdict;
+  reasons?: string[];
+  nutrition?: { calories?: number; confidence?: number };
 };
 
 type RateResponse = {
-  uploadKey?: string;
-  count: number;
-  ratedItems: RatedItem[];
+  ratedItems?: RatedItem[];
   cached?: boolean;
 };
 
-const STORAGE_PROFILE_KEY = "voravia.profile.v1";
-const STORAGE_CACHE_PREFIX = "voravia.menu.cache.v1:"; // + uploadKey + ":" + profileHash
+const API_BASE = process.env.EXPO_PUBLIC_API_BASE_URL?.trim() || "http://localhost:8787";
 
-function getApiBase() {
-  const env = (process.env.EXPO_PUBLIC_API_BASE_URL || "").trim();
-  if (env) return env.replace(/\/$/, "");
+// same keys as restaurants.tsx
+const UPLOADKEY_BY_PLACEID_KEY = "voravia:uploadKeyByPlaceId";
+const ITEMS_BY_UPLOADKEY_KEY = "voravia:itemsByUploadKey";
 
-  // Web fallback: same host, but backend port 8787 (keep protocol)
-  if (typeof window !== "undefined") {
-    const { protocol, hostname } = window.location;
-    return `${protocol}//${hostname}:8787`;
+async function getMap(key: string): Promise<Record<string, any>> {
+  const raw = await AsyncStorage.getItem(key);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
   }
-
-  return "http://localhost:8787";
 }
 
-function stableProfile(p: Profile) {
+async function getMapValue<T>(mapKey: string, k: string, fallback: T): Promise<T> {
+  const map = await getMap(mapKey);
+  return (map[k] as T) ?? fallback;
+}
+
+function verdictColor(v?: Verdict) {
+  if (v === "FIT") return "#11c29a";
+  if (v === "MODERATE") return "#f6c026";
+  if (v === "AVOID") return "#ff5a5f";
+  return "#9fb3c8";
+}
+
+function coerceHealthProfile(raw: any): Profile {
+  const p = raw ?? {};
   return {
     diabetes: !!p.diabetes,
     htn: !!p.htn,
     nafld: !!p.nafld,
-    goal: p.goal,
+    goal: (p.goal as any) || "Maintain",
+    cuisines: Array.isArray(p.cuisines) ? p.cuisines : undefined,
   };
 }
 
-function hashProfile(p: Profile) {
-  return `${p.diabetes ? 1 : 0}${p.htn ? 1 : 0}${p.nafld ? 1 : 0}:${p.goal}`;
-}
+export default function MenuRatingScreen() {
+  const params = useLocalSearchParams<{ placeId?: string; placeName?: string }>();
+  const placeId = params?.placeId ? String(params.placeId) : "";
+  const placeName = params?.placeName ? String(params.placeName) : "";
 
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
-}
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-function verdictPillStyle(v: Verdict) {
-  if (v === "FIT") return styles.pillFit;
-  if (v === "MODERATE") return styles.pillModerate;
-  return styles.pillAvoid;
-}
-
-function scoreBarColor(score: number) {
-  if (score >= 75) return styles.barGood;
-  if (score >= 45) return styles.barMid;
-  return styles.barBad;
-}
-
-export default function MenuScreen() {
-  const API = useMemo(() => getApiBase(), []);
   const [profile, setProfile] = useState<Profile>({
-    diabetes: true,
-    htn: true,
+    diabetes: false,
+    htn: false,
     nafld: false,
-    goal: "Lose",
+    goal: "Maintain",
   });
 
   const [uploadKey, setUploadKey] = useState<string>("");
-  const [sections, setSections] = useState<MenuSection[]>([]);
-  const [extracting, setExtracting] = useState(false);
-  const [extractError, setExtractError] = useState<string | null>(null);
-
-  const [selectedNames, setSelectedNames] = useState<string[]>([]);
-  const [search, setSearch] = useState("");
-
-  const [rating, setRating] = useState(false);
-  const [rateError, setRateError] = useState<string | null>(null);
-  const [rated, setRated] = useState<RateResponse | null>(null);
-
+  const [items, setItems] = useState<string[]>([]);
+  const [rated, setRated] = useState<RatedItem[]>([]);
   const [filter, setFilter] = useState<"ALL" | Verdict>("ALL");
-  const rerateTimer = useRef<any>(null);
 
+  // load profile
   useEffect(() => {
     (async () => {
       try {
-        const saved = await AsyncStorage.getItem(STORAGE_PROFILE_KEY);
-        if (saved) setProfile((prev) => ({ ...prev, ...JSON.parse(saved) }));
-      } catch {}
+        const p = await getSavedProfile();
+        if (p) setProfile(coerceHealthProfile(p));
+      } catch {
+        // ignore
+      }
     })();
   }, []);
 
+  // save profile changes
   useEffect(() => {
-    AsyncStorage.setItem(STORAGE_PROFILE_KEY, JSON.stringify(stableProfile(profile))).catch(() => {});
-  }, [profile]);
+    (async () => {
+      try {
+        await saveProfile(profile);
+      } catch {
+        // ignore
+      }
+    })();
+  }, [profile.diabetes, profile.htn, profile.nafld, profile.goal]);
 
-  const profileHash = useMemo(() => hashProfile(profile), [profile]);
-  const cacheKey = useMemo(() => {
-    if (!uploadKey) return "";
-    return `${STORAGE_CACHE_PREFIX}${uploadKey}:${profileHash}`;
-  }, [uploadKey, profileHash]);
+  // load uploadKey + items for this placeId (gated)
+  useEffect(() => {
+    (async () => {
+      setError(null);
+      setRated([]);
 
-  async function loadCacheIfAny() {
-    if (!cacheKey) return false;
-    try {
-      const hit = await AsyncStorage.getItem(cacheKey);
-      if (!hit) return false;
-      const parsed = JSON.parse(hit) as RateResponse;
-      setRated({ ...parsed, cached: true });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  async function saveCache(resp: RateResponse) {
-    if (!cacheKey) return;
-    try {
-      await AsyncStorage.setItem(cacheKey, JSON.stringify(resp));
-    } catch {}
-  }
-
-  async function uploadFilesWeb(files: FileList | null) {
-    if (!files || files.length === 0) return;
-
-    setExtractError(null);
-    setExtracting(true);
-    setRated(null);
-    setRateError(null);
-
-    try {
-      const form = new FormData();
-      for (const f of Array.from(files).slice(0, 6)) {
-        form.append("files", f);
+      if (!placeId) {
+        setUploadKey("");
+        setItems([]);
+        return;
       }
 
-      const url = `${API}/api/menu/extract-upload`;
+      const key = await getMapValue<string>(UPLOADKEY_BY_PLACEID_KEY, placeId, "");
+      setUploadKey(key);
 
-      const resp = await fetch(url, { method: "POST", body: form });
-
-      // If this is HTML (typical when you accidentally hit Expo server), show a clearer error
-      const ct = resp.headers.get("content-type") || "";
-      const textIfNotJson = ct.includes("application/json") ? null : await resp.text();
-
-      if (!resp.ok) {
-        const t = textIfNotJson ?? (await resp.text());
-        throw new Error(
-          `Upload failed (${resp.status}). Make sure API base is backend (8787). Response: ${String(t).slice(0, 220)}`
-        );
+      if (!key) {
+        setItems([]);
+        return;
       }
 
-      const data = (await resp.json()) as ExtractUploadResponse;
+      const savedItems = await getMapValue<string[]>(ITEMS_BY_UPLOADKEY_KEY, key, []);
+      setItems(Array.isArray(savedItems) ? savedItems : []);
+    })();
+  }, [placeId]);
 
-      setUploadKey(data.uploadKey);
-      setSections(data.sections || []);
-
-      const names = (data.sections || [])
-        .flatMap((s) => s.items || [])
-        .map((i) => i.name)
-        .filter(Boolean);
-
-      setSelectedNames(names.slice(0, 12));
-    } catch (e: any) {
-      setExtractError(e?.message || "Upload failed");
-    } finally {
-      setExtracting(false);
-    }
-  }
-
-  async function rateNow(force = false) {
+  async function runRating() {
     if (!uploadKey) {
-      setRateError("Missing uploadKey. Upload a menu first.");
+      setError("No menu uploaded for this restaurant yet. Go back to Eat Out → Upload Menu.");
       return;
     }
-    if (selectedNames.length === 0) {
-      setRateError("Select at least 1 item to rate.");
+    if (!items.length) {
+      setError("Menu items missing for this upload. Re-upload from Eat Out with a clearer photo/PDF.");
       return;
     }
 
-    setRateError(null);
-    setRating(true);
+    setBusy(true);
+    setError(null);
 
     try {
-      if (!force) {
-        const usedCache = await loadCacheIfAny();
-        if (usedCache) return;
+      const cached = await getCachedRating(uploadKey, profile);
+      if (cached?.rating?.ratedItems?.length) {
+        setRated(cached.rating.ratedItems);
+        return;
       }
 
-      const resp = await fetch(`${API}/api/menu/rate`, {
+      const { diabetes, htn, nafld, goal } = profile;
+
+      const resp = await fetch(`${API_BASE}/api/menu/rate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           uploadKey,
-          items: selectedNames.slice(0, 30),
-          profile: stableProfile(profile),
+          items: items.slice(0, 80), // ✅ prevent 400, keep payload bounded
+          profile: { diabetes, htn, nafld, goal },
         }),
       });
 
-      if (!resp.ok) {
-        const t = await resp.text();
-        throw new Error(`Rate failed (${resp.status}): ${t}`);
+      const json = (await resp.json().catch(() => null)) as RateResponse | null;
+      if (!resp.ok || !json) {
+        const msg = (json as any)?.message || `Request failed (${resp.status})`;
+        throw new Error(msg);
       }
 
-      const data = (await resp.json()) as any;
-
-      const normalized: RateResponse = {
-        uploadKey: data.uploadKey || uploadKey,
-        count: data.count || (data.ratedItems?.length ?? 0),
-        ratedItems: data.ratedItems || [],
-        cached: !!data.cached,
-      };
-
-      setRated(normalized);
-      await saveCache(normalized);
+      setRated(json.ratedItems || []);
+      await setCachedRating(uploadKey, profile, json);
     } catch (e: any) {
-      setRateError(e?.message || "Rate failed");
+      setError(e?.message || "Rating failed");
     } finally {
-      setRating(false);
+      setBusy(false);
     }
   }
 
+  // auto-rate whenever we have uploadKey + items (and when profile changes, cache will handle fast)
   useEffect(() => {
-    if (!uploadKey || selectedNames.length === 0) return;
-    if (rerateTimer.current) clearTimeout(rerateTimer.current);
-    rerateTimer.current = setTimeout(() => {
-      rateNow(false);
-    }, 350);
-    return () => rerateTimer.current && clearTimeout(rerateTimer.current);
+    if (!uploadKey || !items.length) return;
+    runRating();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileHash]);
+  }, [uploadKey, items, profile.diabetes, profile.htn, profile.nafld, profile.goal]);
 
-  const allMenuNames = useMemo(() => {
-    const names = sections.flatMap((s) => s.items.map((i) => i.name)).filter(Boolean);
-    return Array.from(new Set(names));
-  }, [sections]);
-
-  const filteredMenuNames = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return allMenuNames;
-    return allMenuNames.filter((n) => n.toLowerCase().includes(q));
-  }, [allMenuNames, search]);
-
-  const shownRatedItems = useMemo(() => {
-    const items = rated?.ratedItems || [];
-    if (filter === "ALL") return items;
-    return items.filter((x) => x.verdict === filter);
+  const visibleRated = useMemo(() => {
+    if (filter === "ALL") return rated;
+    return rated.filter((r) => r.verdict === filter);
   }, [rated, filter]);
 
   return (
-    <ScrollView style={styles.page} contentContainerStyle={styles.container}>
+    <ScrollView style={styles.page} contentContainerStyle={styles.content}>
       <Text style={styles.h1}>Menu Rating</Text>
-      <Text style={styles.sub}>Upload menu screenshot/PDF → select items → get FIT/MODERATE/AVOID</Text>
-
-      <Text style={styles.apiNote}>API: {API}</Text>
+      {placeName ? <Text style={styles.sub}>Restaurant: {placeName}</Text> : null}
 
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>1) Upload menu (PDF / screenshot)</Text>
+        <Text style={styles.cardTitle}>Profile</Text>
 
-        {Platform.OS === "web" ? (
-          <View style={styles.webUploadRow}>
-            <input
-              type="file"
-              accept="application/pdf,image/*"
-              multiple
-              onChange={(e) => uploadFilesWeb(e.target.files)}
-              style={{ color: "white" }}
-            />
-            {extracting ? (
-              <View style={styles.inline}>
-                <ActivityIndicator />
-                <Text style={styles.muted}>Extracting…</Text>
-              </View>
-            ) : null}
-          </View>
-        ) : (
-          <Text style={styles.muted}>
-            On mobile we’ll add DocumentPicker next. For now, use Web upload to test end-to-end.
-          </Text>
-        )}
+        <ToggleRow label="Diabetes" value={profile.diabetes} onPress={() => setProfile((p) => ({ ...p, diabetes: !p.diabetes }))} />
+        <ToggleRow label="Hypertension" value={profile.htn} onPress={() => setProfile((p) => ({ ...p, htn: !p.htn }))} />
+        <ToggleRow label="Fatty Liver" value={profile.nafld} onPress={() => setProfile((p) => ({ ...p, nafld: !p.nafld }))} />
 
-        {extractError ? <Text style={styles.err}>{extractError}</Text> : null}
-
-        {uploadKey ? (
-          <View style={styles.kvRow}>
-            <Text style={styles.kvKey}>uploadKey</Text>
-            <Text style={styles.kvVal} numberOfLines={1}>
-              {uploadKey}
-            </Text>
-          </View>
-        ) : null}
-
-        {sections.length > 0 ? (
-          <Text style={styles.muted}>
-            Extracted {sections.length} sections • {allMenuNames.length} unique items
-          </Text>
-        ) : null}
-      </View>
-
-      <View style={styles.cardDark}>
-        <Text style={styles.cardTitle}>2) Profile Toggles</Text>
-
-        <View style={styles.toggleRow}>
-          <Toggle label="Diabetes" value={profile.diabetes} onChange={(v) => setProfile((p) => ({ ...p, diabetes: v }))} />
-          <Toggle
-            label="Hypertension (HTN)"
-            value={profile.htn}
-            onChange={(v) => setProfile((p) => ({ ...p, htn: v }))}
-          />
-          <Toggle
-            label="Fatty Liver (NAFLD)"
-            value={profile.nafld}
-            onChange={(v) => setProfile((p) => ({ ...p, nafld: v }))}
-          />
-        </View>
-
-        <View style={styles.goalRow}>
-          {(["Lose", "Maintain", "Gain"] as Goal[]).map((g) => (
-            <Pill key={g} text={g} active={profile.goal === g} onPress={() => setProfile((p) => ({ ...p, goal: g }))} />
+        <View style={{ height: 10 }} />
+        <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
+          {(["Lose", "Maintain", "Gain"] as const).map((g) => (
+            <Chip key={g} label={g} active={profile.goal === g} onPress={() => setProfile((p) => ({ ...p, goal: g }))} />
           ))}
         </View>
-
-        <Text style={styles.muted}>Changes auto re-run rating (cached per profile).</Text>
       </View>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>3) Select menu items to rate</Text>
-
-        <View style={styles.row}>
-          <TextInput
-            value={search}
-            onChangeText={setSearch}
-            placeholder="Search menu items…"
-            placeholderTextColor="#90A4AE"
-            style={styles.input}
-          />
-          <Pressable onPress={() => setSelectedNames(allMenuNames.slice(0, 20))} style={styles.btnGhost}>
-            <Text style={styles.btnGhostTxt}>Auto pick</Text>
-          </Pressable>
-        </View>
-
-        <Text style={styles.muted}>Selected: {selectedNames.length} (we’ll rate up to 30 per call)</Text>
-
-        <View style={styles.chipsWrap}>
-          {filteredMenuNames.slice(0, 60).map((name) => {
-            const active = selectedNames.includes(name);
-            return (
-              <Chip
-                key={name}
-                text={name}
-                active={active}
-                onPress={() => {
-                  setSelectedNames((prev) => {
-                    if (prev.includes(name)) return prev.filter((x) => x !== name);
-                    return [...prev, name].slice(0, 30);
-                  });
-                }}
-              />
-            );
-          })}
-        </View>
-
-        <View style={styles.row}>
-          <Pressable
-            onPress={() => rateNow(true)}
-            style={[styles.btn, (!uploadKey || selectedNames.length === 0 || rating) && styles.btnDisabled]}
-            disabled={!uploadKey || selectedNames.length === 0 || rating}
-          >
-            {rating ? <ActivityIndicator /> : <Text style={styles.btnTxt}>Rate Selected</Text>}
-          </Pressable>
-
-          <Pressable
-            onPress={() => {
-              setSelectedNames([]);
-              setRated(null);
-              setRateError(null);
-            }}
-            style={styles.btnDangerGhost}
-          >
-            <Text style={styles.btnDangerGhostTxt}>Clear</Text>
-          </Pressable>
-        </View>
-
-        {rateError ? <Text style={styles.err}>{rateError}</Text> : null}
+      <View style={styles.filtersRow}>
+        {(["ALL", "FIT", "MODERATE", "AVOID"] as const).map((v) => (
+          <FilterChip key={v} label={v} active={filter === v} onPress={() => setFilter(v)} />
+        ))}
       </View>
 
-      <View style={styles.card}>
-        <View style={styles.rowBetween}>
-          <Text style={styles.cardTitle}>4) Rated results</Text>
-          {rated?.cached ? <Text style={styles.cacheBadge}>Cached</Text> : null}
+      {busy ? (
+        <View style={{ marginTop: 14, alignItems: "center" }}>
+          <ActivityIndicator />
+          <Text style={{ marginTop: 8, color: "#52606d" }}>Analyzing…</Text>
         </View>
+      ) : null}
 
-        <View style={styles.filterRow}>
-          <Pill text="ALL" active={filter === "ALL"} onPress={() => setFilter("ALL")} />
-          <Pill text="FIT" active={filter === "FIT"} onPress={() => setFilter("FIT")} />
-          <Pill text="MODERATE" active={filter === "MODERATE"} onPress={() => setFilter("MODERATE")} />
-          <Pill text="AVOID" active={filter === "AVOID"} onPress={() => setFilter("AVOID")} />
+      {error ? (
+        <View style={styles.errorBox}>
+          <Text style={styles.errorTitle}>Error</Text>
+          <Text style={styles.errorText}>{error}</Text>
+          <Pressable style={styles.retryBtn} onPress={() => setError(null)}>
+            <Text style={styles.retryBtnText}>Dismiss</Text>
+          </Pressable>
         </View>
+      ) : null}
 
-        {!rated ? (
-          <Text style={styles.muted}>No results yet. Upload + select items + rate.</Text>
-        ) : (
-          <View style={{ gap: 12 }}>
-            {shownRatedItems.map((it) => (
-              <View key={it.input} style={styles.resultCard}>
-                <View style={styles.rowBetween}>
-                  <Text style={styles.resultName}>{it.name || it.input}</Text>
-                  <View style={[styles.pill, verdictPillStyle(it.verdict)]}>
-                    <Text style={styles.pillTxt}>{it.verdict}</Text>
-                  </View>
+      {visibleRated.length ? (
+        <View style={{ marginTop: 14 }}>
+          {visibleRated.map((r, idx) => (
+            <View key={`${r.input}-${idx}`} style={styles.itemCard}>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 12 }}>
+                <Text style={styles.itemName}>{r.name || r.input}</Text>
+                <View style={[styles.badge, { borderColor: verdictColor(r.verdict) }]}>
+                  <Text style={[styles.badgeText, { color: verdictColor(r.verdict) }]}>{r.verdict || "—"}</Text>
                 </View>
-
-                <View style={styles.scoreRow}>
-                  <Text style={styles.scoreLabel}>Score</Text>
-                  <Text style={styles.scoreVal}>{clamp(it.score ?? 0, 0, 100)}/100</Text>
-                </View>
-
-                <View style={styles.barTrack}>
-                  <View
-                    style={[
-                      styles.barFill,
-                      scoreBarColor(clamp(it.score ?? 0, 0, 100)),
-                      { width: `${clamp(it.score ?? 0, 0, 100)}%` },
-                    ]}
-                  />
-                </View>
-
-                {it.nutrition ? (
-                  <View style={styles.nutRow}>
-                    <Nut text={`Cal ${it.nutrition.calories ?? "—"}`} />
-                    <Nut text={`Carbs ${it.nutrition.carbsG ?? "—"}g`} />
-                    <Nut text={`Prot ${it.nutrition.proteinG ?? "—"}g`} />
-                    <Nut text={`Fat ${it.nutrition.fatG ?? "—"}g`} />
-                    <Nut text={`Na ${it.nutrition.sodiumMg ?? "—"}mg`} />
-                  </View>
-                ) : null}
-
-                {it.reasons && it.reasons.length > 0 ? (
-                  <View style={{ marginTop: 8 }}>
-                    {it.reasons.slice(0, 5).map((r, idx) => (
-                      <Text key={`${it.input}-r-${idx}`} style={styles.reason}>
-                        • {r}
-                      </Text>
-                    ))}
-                  </View>
-                ) : (
-                  <Text style={styles.mutedSmall}>No specific warnings for this profile.</Text>
-                )}
               </View>
-            ))}
-          </View>
-        )}
-      </View>
 
-      <View style={{ height: 40 }} />
+              <Text style={styles.itemMeta}>
+                Score: <Text style={{ fontWeight: "900" }}>{r.score ?? "—"}</Text>
+                {"  "}•{"  "}
+                Calories: <Text style={{ fontWeight: "900" }}>{r.nutrition?.calories ?? "—"}</Text>
+                {r.nutrition?.confidence != null ? (
+                  <>
+                    {"  "}•{"  "}Confidence:{" "}
+                    <Text style={{ fontWeight: "900" }}>{Math.round(r.nutrition.confidence * 100)}%</Text>
+                  </>
+                ) : null}
+              </Text>
+
+              {r.reasons?.length ? (
+                <View style={{ marginTop: 8 }}>
+                  {r.reasons.slice(0, 4).map((x, i) => (
+                    <Text key={i} style={styles.reason}>
+                      • {x}
+                    </Text>
+                  ))}
+                </View>
+              ) : null}
+            </View>
+          ))}
+        </View>
+      ) : null}
     </ScrollView>
   );
 }
 
-function Toggle({ label, value, onChange }: { label: string; value: boolean; onChange: (v: boolean) => void }) {
+function ToggleRow({ label, value, onPress }: { label: string; value: boolean; onPress: () => void }) {
   return (
-    <Pressable onPress={() => onChange(!value)} style={[styles.toggle, value && styles.toggleOn]}>
-      <Text style={[styles.toggleTxt, value && styles.toggleTxtOn]}>{label}</Text>
+    <Pressable style={styles.toggleRow} onPress={onPress}>
+      <Text style={styles.toggleLabel}>{label}</Text>
+      <View style={[styles.pill, value ? styles.pillOn : styles.pillOff]}>
+        <Text style={styles.pillText}>{value ? "ON" : "OFF"}</Text>
+      </View>
     </Pressable>
   );
 }
 
-function Pill({ text, active, onPress }: { text: string; active: boolean; onPress: () => void }) {
+function Chip({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
   return (
-    <Pressable onPress={onPress} style={[styles.pillBtn, active && styles.pillBtnOn]}>
-      <Text style={[styles.pillBtnTxt, active && styles.pillBtnTxtOn]}>{text}</Text>
+    <Pressable style={[styles.chip, active ? styles.chipOn : styles.chipOff]} onPress={onPress}>
+      <Text style={[styles.chipText, active ? styles.chipTextOn : styles.chipTextOff]}>{label}</Text>
     </Pressable>
   );
 }
 
-function Chip({ text, active, onPress }: { text: string; active: boolean; onPress: () => void }) {
+function FilterChip({
+  label,
+  active,
+  onPress,
+}: {
+  label: "ALL" | Verdict;
+  active: boolean;
+  onPress: () => void;
+}) {
   return (
-    <Pressable onPress={onPress} style={[styles.chip, active && styles.chipOn]}>
-      <Text style={[styles.chipTxt, active && styles.chipTxtOn]} numberOfLines={1}>
-        {text}
-      </Text>
+    <Pressable style={[styles.filterChip, active ? styles.filterChipOn : styles.filterChipOff]} onPress={onPress}>
+      <Text style={[styles.filterChipText, active ? styles.filterChipTextOn : styles.filterChipTextOff]}>{label}</Text>
     </Pressable>
-  );
-}
-
-function Nut({ text }: { text: string }) {
-  return (
-    <View style={styles.nutPill}>
-      <Text style={styles.nutTxt}>{text}</Text>
-    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: "#F6FAFB" },
-  container: { padding: 18, gap: 14 },
+  page: { flex: 1, backgroundColor: "#f6f7fb" },
+  content: { padding: 16, paddingBottom: 40 },
 
-  h1: { fontSize: 36, fontWeight: "800", color: "#0B1B2B", marginTop: 4 },
-  sub: { fontSize: 14, color: "#5C6B7A", marginTop: -6 },
-  apiNote: { fontSize: 12, color: "#7A8A9A", marginTop: -6 },
+  h1: { fontSize: 34, fontWeight: "900", color: "#0b1220" },
+  sub: { marginTop: 6, color: "#52606d", fontSize: 14 },
 
   card: {
-    backgroundColor: "white",
+    marginTop: 14,
+    backgroundColor: "#0b1324",
     borderRadius: 18,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: "#E6EEF2",
-    gap: 10,
-  },
-  cardDark: {
-    backgroundColor: "#0D1B2A",
-    borderRadius: 18,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: "#10283E",
-    gap: 10,
-  },
-  cardTitle: { fontSize: 16, fontWeight: "800", color: "#0B1B2B" },
-
-  webUploadRow: { gap: 10 },
-  inline: { flexDirection: "row", gap: 10, alignItems: "center" },
-
-  muted: { color: "#7A8A9A", fontSize: 13 },
-  mutedSmall: { color: "#7A8A9A", fontSize: 12, marginTop: 6 },
-  err: { color: "#B00020", fontWeight: "700" },
-
-  kvRow: { flexDirection: "row", gap: 10, alignItems: "center" },
-  kvKey: { fontSize: 12, color: "#7A8A9A" },
-  kvVal: { flex: 1, fontSize: 12, color: "#0B1B2B" },
-
-  toggleRow: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
-  toggle: {
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#2A3B4F",
-    backgroundColor: "transparent",
-  },
-  toggleOn: { backgroundColor: "#2F7D85", borderColor: "#2F7D85" },
-  toggleTxt: { color: "#DDE6EE", fontWeight: "700" },
-  toggleTxtOn: { color: "white" },
-
-  goalRow: { flexDirection: "row", gap: 10, flexWrap: "wrap" },
-
-  row: { flexDirection: "row", gap: 10, alignItems: "center" },
-  rowBetween: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-
-  input: {
-    flex: 1,
-    height: 44,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#D8E5EC",
-    paddingHorizontal: 12,
-    color: "#0B1B2B",
-    backgroundColor: "#F7FBFD",
-  },
-
-  btn: {
-    backgroundColor: "#2F7D85",
-    borderRadius: 14,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    minWidth: 160,
-    alignItems: "center",
-  },
-  btnDisabled: { opacity: 0.55 },
-  btnTxt: { color: "white", fontWeight: "800" },
-
-  btnGhost: {
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#D8E5EC",
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    backgroundColor: "white",
-  },
-  btnGhostTxt: { fontWeight: "800", color: "#0B1B2B" },
-
-  btnDangerGhost: {
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#F1C6C6",
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    backgroundColor: "#FFF6F6",
-  },
-  btnDangerGhostTxt: { fontWeight: "800", color: "#B00020" },
-
-  chipsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-
-  chip: {
-    maxWidth: 240,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#D8E5EC",
-    backgroundColor: "#FFFFFF",
-  },
-  chipOn: { backgroundColor: "#0D1B2A", borderColor: "#0D1B2A" },
-  chipTxt: { color: "#0B1B2B", fontWeight: "700", fontSize: 13 },
-  chipTxtOn: { color: "white" },
-
-  filterRow: { flexDirection: "row", gap: 10, flexWrap: "wrap" },
-  pillBtn: {
-    borderRadius: 999,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderWidth: 1,
-    borderColor: "#D8E5EC",
-    backgroundColor: "white",
-  },
-  pillBtnOn: { backgroundColor: "#2F7D85", borderColor: "#2F7D85" },
-  pillBtnTxt: { fontWeight: "800", color: "#0B1B2B" },
-  pillBtnTxtOn: { color: "white" },
-
-  cacheBadge: {
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 999,
-    backgroundColor: "#E8F4F5",
-    color: "#1D6D75",
-    fontWeight: "800",
-  },
-
-  resultCard: {
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#E6EEF2",
-    backgroundColor: "#FFFFFF",
     padding: 14,
-    gap: 8,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
   },
-  resultName: { fontSize: 16, fontWeight: "900", color: "#0B1B2B", flex: 1, paddingRight: 8 },
+  cardTitle: { color: "white", fontSize: 16, fontWeight: "800" },
+
+  toggleRow: {
+    marginTop: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  toggleLabel: { color: "white", fontSize: 14, fontWeight: "700" },
 
   pill: { paddingVertical: 6, paddingHorizontal: 10, borderRadius: 999 },
-  pillTxt: { color: "white", fontWeight: "900", fontSize: 12 },
-  pillFit: { backgroundColor: "#2E7D32" },
-  pillModerate: { backgroundColor: "#C27C0E" },
-  pillAvoid: { backgroundColor: "#B00020" },
+  pillOn: { backgroundColor: "rgba(64,196,160,0.25)", borderWidth: 1, borderColor: "rgba(64,196,160,0.55)" },
+  pillOff: { backgroundColor: "rgba(255,255,255,0.08)", borderWidth: 1, borderColor: "rgba(255,255,255,0.12)" },
+  pillText: { color: "white", fontSize: 12, fontWeight: "800" },
 
-  scoreRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  scoreLabel: { color: "#5C6B7A", fontWeight: "800" },
-  scoreVal: { color: "#0B1B2B", fontWeight: "900" },
+  chip: { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1 },
+  chipOn: { backgroundColor: "rgba(64,196,160,0.25)", borderColor: "rgba(64,196,160,0.55)" },
+  chipOff: { backgroundColor: "rgba(255,255,255,0.06)", borderColor: "rgba(255,255,255,0.10)" },
+  chipText: { fontSize: 13, fontWeight: "800" },
+  chipTextOn: { color: "white" },
+  chipTextOff: { color: "rgba(255,255,255,0.75)" },
 
-  barTrack: { height: 10, borderRadius: 999, backgroundColor: "#EDF3F7", overflow: "hidden" },
-  barFill: { height: 10, borderRadius: 999 },
-  barGood: { backgroundColor: "#2E7D32" },
-  barMid: { backgroundColor: "#C27C0E" },
-  barBad: { backgroundColor: "#B00020" },
+  filtersRow: { marginTop: 14, flexDirection: "row", gap: 10, flexWrap: "wrap" },
+  filterChip: { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1 },
+  filterChipOn: { backgroundColor: "rgba(15,23,42,0.9)", borderColor: "rgba(15,23,42,0.9)" },
+  filterChipOff: { backgroundColor: "rgba(255,255,255,0.9)", borderColor: "rgba(15,23,42,0.12)" },
+  filterChipText: { fontSize: 13, fontWeight: "900" },
+  filterChipTextOn: { color: "white" },
+  filterChipTextOff: { color: "#0b1220" },
 
-  nutRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 4 },
-  nutPill: {
-    backgroundColor: "#F4F8FB",
+  itemCard: {
+    backgroundColor: "white",
+    borderRadius: 16,
+    padding: 14,
     borderWidth: 1,
-    borderColor: "#E6EEF2",
-    borderRadius: 999,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+    borderColor: "rgba(15,23,42,0.08)",
+    marginBottom: 12,
   },
-  nutTxt: { fontWeight: "800", color: "#0B1B2B", fontSize: 12 },
+  itemName: { fontSize: 16, fontWeight: "900", color: "#0b1220", flex: 1 },
+  itemMeta: { marginTop: 8, color: "#52606d", fontSize: 13 },
 
-  reason: { color: "#0B1B2B", fontSize: 13, marginTop: 2 },
+  badge: { paddingVertical: 6, paddingHorizontal: 10, borderRadius: 999, borderWidth: 2, alignSelf: "flex-start" },
+  badgeText: { fontWeight: "900", fontSize: 12 },
+
+  reason: { color: "#334e68", marginTop: 4, fontSize: 13 },
+
+  errorBox: {
+    marginTop: 14,
+    backgroundColor: "#fde7e9",
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: "#f5b5ba",
+  },
+  errorTitle: { fontSize: 16, fontWeight: "900", color: "#7f1d1d" },
+  errorText: { marginTop: 6, color: "#7f1d1d" },
+  retryBtn: { marginTop: 12, borderRadius: 14, paddingVertical: 12, alignItems: "center", backgroundColor: "#ef4444" },
+  retryBtnText: { color: "white", fontWeight: "900" },
 });
