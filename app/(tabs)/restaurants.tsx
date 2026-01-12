@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getSavedProfile } from "@/src/storage/voraviaStorage";
+import { getMobileLocationOnce, VoraviaLocation } from "@/src/utils/location";
 
 type Place = {
   id: string;
@@ -225,6 +226,39 @@ export default function RestaurantsScreen() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [uploadingPlaceId, setUploadingPlaceId] = useState<string>("");
 
+
+const [loc, setLoc] = useState<VoraviaLocation | null>(null);
+const [locError, setLocError] = useState<string | null>(null);
+const [locLoading, setLocLoading] = useState(false);
+
+const loadLocation = useCallback(async () => {
+  if (Platform.OS === "web") return;
+
+  setLocLoading(true);
+  setLocError(null);
+
+  const res = await getMobileLocationOnce();
+  if (!res.ok) {
+    setLoc(null);
+    setLocError(res.error);
+    setLocLoading(false);
+    return;
+  }
+
+  setLoc(res.location);
+  setLocLoading(false);
+}, []);
+
+
+useEffect(() => {
+  if (Platform.OS !== "web") {
+    loadLocation();
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
+
+
+
   // ✅ IMPORTANT: loadNearby does NOT depend on React state cuisine (avoids stale mismatch)
   const loadNearby = useCallback(async (cuisineToUse: string) => {
     setLoading(true);
@@ -382,6 +416,30 @@ export default function RestaurantsScreen() {
         <Text style={styles.title}>Eat Out</Text>
         <Text style={styles.sub}>Nearby restaurants • Distance in miles</Text>
 
+        {/* Step 1: Location status */}
+      {Platform.OS !== "web" && (
+        <View style={{ marginTop: 8 }}>
+          {locLoading ? (
+            <View style={{ flexDirection: "row", alignItems: "center" }}>
+              <ActivityIndicator size="small" />
+              <Text style={{ marginLeft: 8, opacity: 0.7 }}>
+                Getting your location…
+              </Text>
+            </View>
+          ) : loc ? (
+            <Text style={{ opacity: 0.7 }}>
+              Near: {[loc.city, loc.region].filter(Boolean).join(", ") || "Using your location"}
+            </Text>
+          ) : locError ? (
+            <Pressable onPress={loadLocation}>
+              <Text style={{ color: "#666" }}>
+                Enable location to find nearby restaurants
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
+      )}
+
         <View style={styles.chipsRow}>
           {cuisineOptions.map((c) => (
             <Pressable
@@ -422,7 +480,7 @@ export default function RestaurantsScreen() {
         ) : null}
       </View>
     );
-  }, [cuisineOptions, cuisine, loading, error, preferredCuisine, loadNearby]);
+  }, [cuisineOptions, cuisine, onSelectCuisine, loc, locLoading, locError, loadLocation]);
 
   return (
     <View style={styles.container}>
