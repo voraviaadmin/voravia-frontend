@@ -14,7 +14,11 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "health.voravia.voravia"
+      "bundleIdentifier": "health.voravia.voravia",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Voravia uses your location to find nearby restaurants and rate menus based on your health profile.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Voravia uses your location to find nearby restaurants and rate menus based on your health profile."
+      }
     },
     "android": {
       "package": "health.voravia.voravia",

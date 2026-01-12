@@ -103,17 +103,34 @@ async function getLocationWeb(): Promise<{ lat: number; lng: number }> {
       navigator.geolocation.getCurrentPosition(
         (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
         (err) => reject(new Error(err.message)),
-        { enableHighAccuracy: true }
+        // ✅ CHANGED: added timeout to avoid hanging
+        { enableHighAccuracy: true, timeout: 12000 }
       );
     });
   }
   throw new Error("Geolocation not available.");
 }
 
+// ✅ NEW: native location for iOS/Android using expo-location (dynamic import so Web doesn't break)
+async function getLocationNative(): Promise<{ lat: number; lng: number }> {
+  const Location = await import("expo-location");
+
+  const { status } = await Location.requestForegroundPermissionsAsync();
+  if (status !== "granted") {
+    throw new Error("Location permission not granted.");
+  }
+
+  const pos = await Location.getCurrentPositionAsync({
+    accuracy: Location.Accuracy.Balanced,
+  });
+
+  return { lat: pos.coords.latitude, lng: pos.coords.longitude };
+}
+
+// ✅ CHANGED: now supports native (iOS Simulator) while keeping Web behavior
 async function getLocation(): Promise<{ lat: number; lng: number }> {
-  // ✅ MVP: web works now; mobile location next step (expo-location)
   if (Platform.OS === "web") return getLocationWeb();
-  throw new Error("Location not available yet on native. Next step: add expo-location (mobile-first).");
+  return getLocationNative();
 }
 
 async function tryFetchJSON(url: string, init: RequestInit) {
