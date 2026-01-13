@@ -128,11 +128,6 @@ async function getLocationNative(): Promise<{ lat: number; lng: number }> {
   return { lat: pos.coords.latitude, lng: pos.coords.longitude };
 }
 
-// ✅ CHANGED: now supports native (iOS Simulator) while keeping Web behavior
-async function getLocation(): Promise<{ lat: number; lng: number }> {
-  if (Platform.OS === "web") return getLocationWeb();
-  return getLocationNative();
-}
 
 async function tryFetchJSON(url: string, init: RequestInit) {
   const res = await fetch(url, init);
@@ -237,6 +232,9 @@ const loadLocation = useCallback(async () => {
   setLocLoading(true);
   setLocError(null);
 
+
+
+  
   const res = await getMobileLocationOnce();
   if (!res.ok) {
     setLoc(null);
@@ -255,7 +253,29 @@ useEffect(() => {
     loadLocation();
   }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-}, []);
+}, [loadLocation]);
+
+const getLocation = useCallback(async (): Promise<{ lat: number; lng: number }> => {
+  // Web remains canonical
+  if (Platform.OS === "web") {
+    return getLocationWeb();
+  }
+
+  // Prefer Step 1 location state (unifies header + fetch)
+  if (loc?.latitude && loc?.longitude) {
+    return { lat: loc.latitude, lng: loc.longitude };
+  }
+
+  // Try Step 1 util if state not ready yet
+  const res = await getMobileLocationOnce();
+  if (res.ok) {
+    setLoc(res.location);
+    return { lat: res.location.latitude, lng: res.location.longitude };
+  }
+
+  // Final fallback (existing behavior)
+  return getLocationNative();
+}, [loc, setLoc]);
 
 
 
@@ -305,7 +325,7 @@ useEffect(() => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [getLocation]);
 
   // ✅ REQUIREMENT: whenever EatOut is called/entered, reset to Profile default + refresh results
   useFocusEffect(
