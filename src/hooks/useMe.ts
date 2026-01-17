@@ -42,6 +42,27 @@ async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+
+export async function patchMe(body: {
+  mode?: "individual" | "family" | "workplace";
+  family?: { activeMemberId?: string | null };
+}) {
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/v1/me?userId=u_head`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`PATCH /v1/me failed: ${text}`);
+  }
+
+  return res.json();
+}
+
+
 /**
  * Normalize multiple possible /v1/me shapes into:
  * {

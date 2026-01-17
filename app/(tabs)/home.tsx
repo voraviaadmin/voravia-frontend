@@ -164,6 +164,7 @@ export default function HomeScreen() {
 
     let recoFocus: string | null = null;
     let recoSuggestionsText: string | null = null;
+    let gotHomeRecosSuggestions = false;
 
 
     // 0) Load /v1/me first (decides which userId we use for Home)
@@ -196,6 +197,7 @@ try {
     }
   
     if (Array.isArray(j?.suggestions) && j.suggestions.length) {
+      gotHomeRecosSuggestions = true;
       recoSuggestionsText = j.suggestions
         .slice(0, 3)
         .map((s: any) => String(s?.name || "").trim())
@@ -232,9 +234,10 @@ try {
           Array.isArray(json.nextWin) && json.nextWin.length ? String(json.nextWin[0]) : "";
         
         
-          if (!nextWinItems.length && nw) {
+          if (!gotHomeRecosSuggestions && nw) {
             setNextWinItems([{ name: nw }]);
           }
+          
           
           
 
