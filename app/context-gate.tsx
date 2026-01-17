@@ -1,5 +1,4 @@
 // app/context-gate.tsx
-
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { View, Text, Pressable, StyleSheet } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
@@ -9,15 +8,21 @@ import { listUsers, UserProfile } from "@/src/storage/users";
 import { listGroups } from "@/src/storage/groups";
 
 import type { ContextScope } from "@/src/context/contextRules";
-import {
-  clampContext,
-  getContextEligibility,
-  getAvailableContexts,
-} from "@/src/context/contextRules";
+import { clampContext, getContextEligibility, getAvailableContexts } from "@/src/context/contextRules";
+
+// Optional: keep backend /v1/me in sync when choosing context
+import { patchMe } from "@/src/hooks/useMe";
+
+function firstParam(v: string | string[] | undefined): string | undefined {
+  if (Array.isArray(v)) return v[0];
+  return v;
+}
 
 export default function ContextGate() {
-  const { force } = useLocalSearchParams<{ force?: string }>();
-  const forceShow = force === "1";
+  const params = useLocalSearchParams<{ force?: string | string[]; t?: string | string[] }>();
+
+  const forceRaw = firstParam(params.force);
+  const forceShow = forceRaw === "1" || forceRaw === "true" || forceRaw === "yes";
 
   const [loading, setLoading] = useState(true);
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -29,7 +34,6 @@ export default function ContextGate() {
     [users, currentUserId]
   );
 
-  // ✅ Hooks MUST be top-level; compute eligibility/options up front
   const eligibility = useMemo(() => {
     return getContextEligibility(me, { hasFamilyGroup });
   }, [me, hasFamilyGroup]);
@@ -40,38 +44,17 @@ export default function ContextGate() {
 
   const options = useMemo(() => {
     const meta: Record<ContextScope, { title: string; sub: string }> = {
-      individual: {
-        title: "Individual",
-        sub: "Your personal score, streaks, and recommendations",
-      },
-      family: {
-        title: "Family",
-        sub: "Shared score + household members",
-      },
-      workplace: {
-        title: "Workplace",
-        sub: "Company aggregate insights (N-1)",
-      },
+      individual: { title: "Individual", sub: "Your personal score, streaks, and recommendations" },
+      family: { title: "Family", sub: "Shared score + household members" },
+      workplace: { title: "Workplace", sub: "Company aggregate insights (N-1)" },
     };
 
-    // Step A: hide ineligible contexts (no disabled tiles)
     return available.map((scope) => ({
       scope,
       title: meta[scope].title,
       sub: meta[scope].sub,
     }));
   }, [available]);
-
-  const debug = useMemo(() => {
-    if (!__DEV__) return null;
-    return {
-      userId: currentUserId,
-      familyId: me?.familyId ?? null,
-      corporateId: me?.corporateId ?? null,
-      hasFamilyGroup,
-      eligibility,
-    };
-  }, [currentUserId, me?.familyId, me?.corporateId, hasFamilyGroup, eligibility]);
 
   // Load persisted context + seed state
   useEffect(() => {
@@ -117,11 +100,15 @@ export default function ContextGate() {
     return () => {
       alive = false;
     };
-  }, [forceShow]);
+  }, [forceShow, firstParam(params.t)]); // t helps force a remount-like re-run
 
   const choose = useCallback(
     async (scope: ContextScope) => {
       await setAppContext({ segment: scope, currentUserId });
+
+      // Best-effort: keep backend truth aligned too
+      patchMe({ mode: scope as any }).catch(() => {});
+
       router.replace("/(tabs)/groups");
     },
     [currentUserId]
@@ -159,14 +146,7 @@ export default function ContextGate() {
       {__DEV__ ? (
         <Text style={styles.devNote}>
           DEV: Eligibility depends on current user’s familyId/corporateId (and Family group fallback).
-        </Text>
-      ) : null}
-
-      {__DEV__ && debug ? (
-        <Text style={styles.devNote}>
-          DEBUG: user={debug.userId} familyId={String(debug.familyId)} corporateId=
-          {String(debug.corporateId)} hasFamilyGroup={String(debug.hasFamilyGroup)} elig=
-          {JSON.stringify(debug.eligibility)}
+          {"\n"}force={String(forceRaw)} (forceShow={String(forceShow)})
         </Text>
       ) : null}
     </View>

@@ -16,6 +16,24 @@ type LogItem = {
   userId?: string;
 };
 
+type NutritionTotals = {
+  caloriesKcal?: number;
+  proteinG?: number;
+  carbsG?: number;
+  fatG?: number;
+  fiberG?: number;
+  sugarG?: number;
+  sodiumMg?: number;
+  hasAny?: boolean;
+};
+
+type HomeRecos = {
+  todaySummary?: { nutritionTotals?: NutritionTotals | null };
+  nextMeal?: { focus?: string; reason?: string };
+  suggestions?: Array<{ name: string; why?: string }>;
+};
+
+
 function isoDay(d: Date) {
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -79,6 +97,42 @@ function ScoreRing({ score, size = 160, stroke = 14 }: { score: number; size?: n
   );
 }
 
+
+function formatTotals(t: any) {
+  if (!t) return "";
+  const parts: string[] = [];
+  if (Number.isFinite(t.proteinG)) parts.push(`Protein ${t.proteinG}g`);
+  if (Number.isFinite(t.fiberG)) parts.push(`Fiber ${t.fiberG}g`);
+  if (Number.isFinite(t.sugarG)) parts.push(`Sugar ${t.sugarG}g`);
+  if (Number.isFinite(t.sodiumMg)) parts.push(`Sodium ${t.sodiumMg}mg`);
+  return parts.join(" • ");
+}
+
+
+function band(label: "low" | "good" | "high") {
+  // keep subtle (matches your UI)
+  if (label === "low") return { backgroundColor: "rgba(255, 193, 7, 0.18)", borderColor: "rgba(255, 193, 7, 0.45)" };
+  if (label === "high") return { backgroundColor: "rgba(255, 59, 48, 0.14)", borderColor: "rgba(255, 59, 48, 0.35)" };
+  return { backgroundColor: "rgba(52, 199, 89, 0.14)", borderColor: "rgba(52, 199, 89, 0.30)" };
+}
+
+function classifyTotals(t: NutritionTotals, th: any) {
+  const protein = Number(t.proteinG ?? NaN);
+  const fiber = Number(t.fiberG ?? NaN);
+  const sugar = Number(t.sugarG ?? NaN);
+  const sodium = Number(t.sodiumMg ?? NaN);
+
+  return {
+    protein: !Number.isFinite(protein) ? "good" : protein < th.proteinMin ? "low" : "good",
+    fiber: !Number.isFinite(fiber) ? "good" : fiber < th.fiberMin ? "low" : "good",
+    sugar: !Number.isFinite(sugar) ? "good" : sugar > th.sugarMax ? "high" : "good",
+    sodium: !Number.isFinite(sodium) ? "good" : sodium > th.sodiumMax ? "high" : "good",
+  } as const;
+}
+
+
+
+
 export default function HomeScreen() {
   const router = useRouter();
 
@@ -86,8 +140,16 @@ export default function HomeScreen() {
   const [score, setScore] = useState<number>(0);
   const [streakDays, setStreakDays] = useState<number>(0);
   const [focusText, setFocusText] = useState<string>("Scan a meal to start");
-  const [nextWinText, setNextWinText] = useState<string>("1 healthy scan to keep streak");
+  
+
+  const [nextWinItems, setNextWinItems] = useState<Array<{ name: string; why?: string }>>([]);
+
+  
   const [errorHint, setErrorHint] = useState<string | null>(null);
+
+  const [homeRecos, setHomeRecos] = useState<HomeRecos | null>(null);
+
+  
 
   const status = useMemo(() => {
     if (score >= 85) return { text: "Excellent", hint: "Keep the streak going." };
@@ -99,6 +161,10 @@ export default function HomeScreen() {
   const load = useCallback(async () => {
     const api = getApiBaseUrl();
     setErrorHint(null);
+
+    let recoFocus: string | null = null;
+    let recoSuggestionsText: string | null = null;
+
 
     // 0) Load /v1/me first (decides which userId we use for Home)
     let meJson: MeResponse;
@@ -113,6 +179,46 @@ export default function HomeScreen() {
 
     const userId = meJson.userId || "u_self";
 
+// 1.5) Personalized Home recommendations (profile-aware)
+try {
+  const r = await fetch(
+    `${api}/v1/home-recommendations?memberId=${encodeURIComponent(userId)}`,
+    { method: "GET" }
+  );
+  const j = await r.json().catch(() => null);
+
+  if (r.ok && j) {
+    setHomeRecos(j);
+  
+    if (j?.nextMeal?.focus) {
+      recoFocus = String(j.nextMeal.focus);
+      setFocusText(recoFocus);
+    }
+  
+    if (Array.isArray(j?.suggestions) && j.suggestions.length) {
+      recoSuggestionsText = j.suggestions
+        .slice(0, 3)
+        .map((s: any) => String(s?.name || "").trim())
+        .filter(Boolean)
+        .join(" • ");
+  
+        if (Array.isArray(j?.suggestions)) {
+          setNextWinItems(
+            j.suggestions
+              .slice(0, 3)
+              .map((s: any) => ({ name: String(s?.name || "").trim(), why: s?.why ? String(s.why) : undefined }))
+              .filter((s: any) => s.name)
+          );
+        }
+        
+    }
+  }
+} catch {
+  // non-fatal: keep current fallback behavior
+}
+
+
+
     // 1) Day summary -> score + nextWin
     try {
       const resp = await fetch(`${api}/v1/day-summary?userId=${encodeURIComponent(userId)}`, { method: "GET" });
@@ -124,12 +230,21 @@ export default function HomeScreen() {
 
         const nw =
           Array.isArray(json.nextWin) && json.nextWin.length ? String(json.nextWin[0]) : "";
-        setNextWinText(nw || "Scan one more meal to improve your day");
+        
+        
+          if (!nextWinItems.length && nw) {
+            setNextWinItems([{ name: nw }]);
+          }
+          
+          
 
-        // Simple focus text based on score (Phase 1)
-        if (dailyScore < 50) setFocusText("Add protein • Add fiber • Lower added sugar");
-        else if (dailyScore < 70) setFocusText("Add fiber • Keep sodium moderate");
-        else setFocusText("Stay balanced • Keep portions consistent");
+          // Only use score-based focus if we did NOT get personalized focus
+          if (!recoFocus) {
+            if (dailyScore < 50) setFocusText("Add protein • Add fiber • Lower added sugar");
+            else if (dailyScore < 70) setFocusText("Add fiber • Keep sodium moderate");
+            else setFocusText("Stay balanced • Keep portions consistent");
+          }
+
       } else {
         setErrorHint("Home is showing defaults (day-summary not reachable).");
       }
@@ -168,6 +283,11 @@ export default function HomeScreen() {
       load();
     }, [load])
   );
+
+  
+  const nutritionTotals = homeRecos?.todaySummary?.nutritionTotals ?? null;
+
+
 
   return (
     <View style={styles.container}>
@@ -225,11 +345,84 @@ export default function HomeScreen() {
         <View style={styles.quickCard}>
           <Text style={styles.quickTitle}>Today’s Focus</Text>
           <Text style={styles.quickText}>{focusText}</Text>
+
+          {nutritionTotals ? (
+  <View style={{ marginTop: 8 }}>
+    <Text style={[styles.quickText, { opacity: 0.75, marginBottom: 6 }]}>So far today</Text>
+
+    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+      {(() => {
+       
+       const th =
+            (homeRecos as any)?.thresholds ?? {
+              proteinMin: 60,
+              fiberMin: 20,
+              sugarMax: 45,
+              sodiumMax: 1800,
+            };
+
+const c = classifyTotals(nutritionTotals, th);
+
+
+        const Chip = ({ text, level }: { text: string; level: "low" | "good" | "high" }) => (
+          <View
+            style={[
+              {
+                paddingHorizontal: 10,
+                paddingVertical: 6,
+                borderRadius: 999,
+                borderWidth: 1,
+              },
+              band(level),
+            ]}
+          >
+            <Text style={[styles.quickText, { opacity: 0.9 }]}>{text}</Text>
+          </View>
+        );
+
+        return (
+          <>
+            {Number.isFinite(nutritionTotals.proteinG ?? NaN) && (
+              <Chip text={`Protein ${nutritionTotals.proteinG}g`} level={c.protein} />
+            )}
+            {Number.isFinite(nutritionTotals.fiberG ?? NaN) && (
+              <Chip text={`Fiber ${nutritionTotals.fiberG}g`} level={c.fiber} />
+            )}
+            {Number.isFinite(nutritionTotals.sugarG ?? NaN) && (
+              <Chip text={`Sugar ${nutritionTotals.sugarG}g`} level={c.sugar} />
+            )}
+            {Number.isFinite(nutritionTotals.sodiumMg ?? NaN) && (
+              <Chip text={`Sodium ${nutritionTotals.sodiumMg}mg`} level={c.sodium} />
+            )}
+          </>
+        );
+      })()}
+    </View>
+  </View>
+) : null}
+
+
+
         </View>
 
         <View style={styles.quickCard}>
           <Text style={styles.quickTitle}>Next Win</Text>
-          <Text style={styles.quickText}>{nextWinText}</Text>
+
+          {nextWinItems.length ? (
+            <View style={{ gap: 6, marginTop: 6 }}>
+              {nextWinItems.map((it, idx) => (
+                <Text key={idx} style={styles.quickText}>
+                  • {it.name}
+                </Text>
+              ))}
+            </View>
+          ) : (
+            <Text style={styles.quickText}>
+              Scan one more meal to improve your day
+            </Text>
+          )}
+
+
         </View>
       </View>
 

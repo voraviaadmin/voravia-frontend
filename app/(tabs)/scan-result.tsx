@@ -232,7 +232,11 @@ export default function ScanResultScreen() {
         } as any
       );
 
-      const resp = await fetch(`${api}/v1/scans`, { method: "POST", body: form });
+      const resp = await fetch(
+        `${api}/v1/scans?memberId=${encodeURIComponent(logForUserId ?? "u_self")}`,
+        { method: "POST", body: form }
+      );
+      
 
       const text = await resp.text();
       let json: any = null;

@@ -7,6 +7,9 @@ import { RollupCard, RollupCardModel } from "@/src/ui/RollupCard";
 
 import { getAppContext, setAppContext } from "@/src/storage/appContext";
 import { listUsers, seedDemoHousehold, UserProfile } from "@/src/storage/users";
+import { patchMe } from "@/src/hooks/useMe";
+
+
 
 import type { ContextScope } from "@/src/context/contextRules";
 import {
@@ -214,6 +217,9 @@ export default function GroupsScreen() {
     async (next: ContextScope) => {
       setSegment(next);
       await setAppContext({ segment: next, currentUserId });
+  
+      // backend truth (best-effort, don’t break UI if it fails)
+      patchMe({ mode: next as any }).catch(() => {});
     },
     [currentUserId]
   );
@@ -225,14 +231,29 @@ export default function GroupsScreen() {
     async (nextUserId: string) => {
       const nextMe = users.find((u) => u.id === nextUserId) ?? null;
       const clamped = clampContext(segment, nextMe, { hasFamilyGroup });
-
+  
       setCurrentUserId(nextUserId);
       setSegment(clamped);
-
+  
       await setAppContext({ segment: clamped, currentUserId: nextUserId });
+  
+      // backend truth: active member (map local ids -> backend ids)
+      const backendMemberId =
+        nextUserId === "head"
+          ? "u_head"
+          : nextUserId === "spouse"
+          ? "u_spouse"
+          : nextUserId === "child1"
+          ? "u_child1"
+          : nextUserId === "child2"
+          ? "u_child2"
+          : "u_head";
+  
+      patchMe({ mode: "family", family: { activeMemberId: backendMemberId } }).catch(() => {});
     },
     [users, segment, hasFamilyGroup]
   );
+  
 
   const showCreateFamilyCTA = segment === "family" && familyGroups.length === 0;
 
