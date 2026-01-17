@@ -17,7 +17,8 @@
       "bundleIdentifier": "health.voravia.voravia",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Voravia uses your location to find nearby restaurants and rate menus based on your health profile.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "Voravia uses your location to find nearby restaurants and rate menus based on your health profile."
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Voravia uses your location to find nearby restaurants and rate menus based on your health profile.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -39,7 +40,7 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "f9bc79fc-83e2-4d89-bdc0-081bf70e74d2"
+        "projectId": "3c58c743-23d6-4df6-8abd-522e801fa46e"
       }
     }
   }

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -11,6 +11,38 @@ import {
 
 import { getSavedProfile, saveProfile } from "@/src/storage/voraviaStorage";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useFocusEffect } from "expo-router";
+import { getAppContext, setAppContext } from "@/src/storage/appContext";
+import { listUsers, upsertUser, UserProfile } from "@/src/storage/users";
+import { clampContext } from "@/src/context/contextRules";
+
+import type { ContextScope } from "@/src/context/contextRules";
+
+function normalizeSegment(seg: any): ContextScope {
+  // supports old stored values + new values
+  switch (seg) {
+    case "individual":
+    case "family":
+    case "workplace":
+      return seg;
+
+    // common legacy values:
+    case "you":
+    case "self":
+      return "individual";
+    case "corporate":
+      return "workplace";
+
+    // removed from MVP:
+    case "insurance":
+      return "individual";
+
+    default:
+      return "individual";
+  }
+}
+
+
 
 const PROFILE_VERSION_KEY = "voravia:profileVersion";
 
@@ -76,6 +108,101 @@ function coerceProfile(raw: any): HealthProfile {
 export default function ProfileScreen() {
   const [profile, setProfile] = useState<HealthProfile>(defaultProfile);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
+
+const [currentUserId, setCurrentUserId] = useState<string>("head");
+const [users, setUsers] = useState<UserProfile[]>([]);
+const [insuranceId, setInsuranceId] = useState("");
+const [corporateId, setCorporateId] = useState("");
+const [saving, setSaving] = useState(false);
+const [saveMsg, setSaveMsg] = useState<string | null>(null);
+
+
+const currentUser = useMemo(
+  () => users.find((u) => u.id === currentUserId) ?? null,
+  [users, currentUserId]
+);
+
+// Load on focus so it stays in sync with Groups tab switcher
+useFocusEffect(
+  useCallback(() => {
+    let alive = true;
+    (async () => {
+      const ctx = await getAppContext();
+      const us = await listUsers();
+      if (!alive) return;
+
+      setCurrentUserId(ctx.currentUserId);
+      setUsers(us);
+
+      const u = us.find((x) => x.id === ctx.currentUserId);
+      setInsuranceId(u?.insuranceId ?? "");
+      setCorporateId(u?.corporateId ?? "");
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [])
+);
+
+const onSave = useCallback(async () => {
+  if (!currentUser) return;
+  setSaving(true);
+  setSaveMsg(null);
+
+  const next: UserProfile = {
+    ...currentUser,
+    insuranceId: insuranceId.trim(),
+    corporateId: corporateId.trim(),
+  };
+
+  await upsertUser(next);
+
+  // refresh local state
+  const us = await listUsers();
+  setUsers(us);
+
+  const ctx = await getAppContext();
+
+  const safeSegment = normalizeSegment((ctx as any).segment);
+  
+  const nextSegment = clampContext(safeSegment, {
+    id: next.id,
+    familyId: next.familyId,
+    corporateId: next.corporateId,
+  });
+  
+  if (nextSegment !== safeSegment) {
+    await setAppContext({
+      ...(ctx as any),
+      segment: nextSegment,
+    });
+  }
+  
+
+  setSaveMsg("Saved");
+  setSaving(false);
+
+  setTimeout(() => setSaveMsg(null), 1200);
+}, [currentUser, insuranceId, corporateId]);
+
+
+// Optional: dev-only quick switch currentUserId (kept in sync with appContext)
+const setActiveUser = useCallback(
+  async (id: string) => {
+    setCurrentUserId(id);
+    const ctx = await getAppContext();
+    await setAppContext({ segment: ctx.segment, currentUserId: id });
+
+    const us = await listUsers();
+    setUsers(us);
+    const u = us.find((x) => x.id === id);
+    setInsuranceId(u?.insuranceId ?? "");
+    setCorporateId(u?.corporateId ?? "");
+  },
+  []
+);
+
+  
   const [customCuisine, setCustomCuisine] = useState("");
 
   const cuisineOptions = useMemo(() => {
@@ -237,7 +364,78 @@ export default function ProfileScreen() {
         </Text>
         {savedMsg ? <Text style={styles.saved}>{savedMsg}</Text> : null}
       </View>
+
+      <View style={styles.card}>
+  <Text style={styles.cardTitle}>Membership IDs</Text>
+
+  <Text style={styles.cardSub}>
+    Active user: <Text style={{ fontWeight: "800" }}>{currentUserId}</Text>
+  </Text>
+
+  {__DEV__ ? (
+    <View style={styles.devRow}>
+      <Pressable
+        onPress={() => setActiveUser("head")}
+        style={[styles.devChip, currentUserId === "head" && styles.devChipActive]}
+      >
+        <Text style={[styles.devChipText, currentUserId === "head" && styles.devChipTextActive]}>
+          Head
+        </Text>
+      </Pressable>
+
+      <Pressable
+        onPress={() => setActiveUser("spouse")}
+        style={[styles.devChip, currentUserId === "spouse" && styles.devChipActive]}
+      >
+        <Text style={[styles.devChipText, currentUserId === "spouse" && styles.devChipTextActive]}>
+          Spouse
+        </Text>
+      </Pressable>
+    </View>
+  ) : null}
+
+  <View style={{ marginTop: 12 }}>
+    <Text style={styles.label}>Insurance ID</Text>
+    <TextInput
+      value={insuranceId}
+      onChangeText={setInsuranceId}
+      placeholder="e.g., INS-A"
+      autoCapitalize="characters"
+      style={styles.input}
+    />
+  </View>
+
+  <View style={{ marginTop: 12 }}>
+    <Text style={styles.label}>Corporate ID</Text>
+    <TextInput
+      value={corporateId}
+      onChangeText={setCorporateId}
+      placeholder="e.g., CORP-X"
+      autoCapitalize="characters"
+      style={styles.input}
+    />
+  </View>
+
+  <View style={{ marginTop: 12, flexDirection: "row", alignItems: "center", gap: 12 }}>
+    <Pressable onPress={onSave} style={[styles.primaryBtn, saving && { opacity: 0.6 }]} disabled={saving}>
+      <Text style={styles.primaryBtnText}>{saving ? "Saving..." : "Save"}</Text>
+    </Pressable>
+
+    {saveMsg ? <Text style={styles.saved}>{saveMsg}</Text> : null}
+  </View>
+
+  <Text style={styles.hint}>
+    These IDs drive rollups in Health Groups. (No backend yet; stored locally.)
+  </Text>
+</View>
+
+
+
     </ScrollView>
+
+
+
+
   );
 }
 
@@ -266,16 +464,56 @@ const styles = StyleSheet.create({
   title: { fontSize: 34, fontWeight: "900", color: "#0b1220" },
   sub: { marginTop: 6, fontSize: 14, color: "#52606d" },
 
+  primaryBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: "#0f766e",
+    alignSelf: "flex-start",
+  },
+  primaryBtnText: {
+    color: "white",
+    fontWeight: "900",
+  },
+  
+
   card: {
     marginTop: 14,
-    backgroundColor: "#0b1324",
-    borderRadius: 18,
     padding: 14,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderRadius: 14,
+    backgroundColor: "rgba(0,0,0,0.04)",
   },
-  cardTitle: { color: "white", fontSize: 16, fontWeight: "800" },
-  cardSub: { marginTop: 6, color: "rgba(255,255,255,0.7)", fontSize: 13 },
+  cardTitle: { fontSize: 16, fontWeight: "900" },
+  cardSub: { marginTop: 6, opacity: 0.7 },
+  label: { fontWeight: "800", opacity: 0.8, marginBottom: 6 },
+  input: {
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.12)",
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: "white",
+  },
+  saveBtn: {
+    backgroundColor: "#0f766e",
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+  },
+  saveBtnText: { color: "white", fontWeight: "900" },
+  saved: { fontWeight: "900", color: "#0f766e" },
+  hint: { marginTop: 10, opacity: 0.6 },
+
+  devRow: { marginTop: 10, flexDirection: "row", gap: 10, alignItems: "center" },
+  devChip: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,0,0,0.06)",
+  },
+  devChipActive: { backgroundColor: "#0f766e" },
+  devChipText: { fontWeight: "900", color: "rgba(0,0,0,0.65)" },
+  devChipTextActive: { color: "white" },
 
   toggleRow: {
     marginTop: 12,
@@ -287,46 +525,48 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  toggleLabel: { color: "white", fontSize: 14, fontWeight: "700" },
+  toggleLabel: { color: "#0b1220", fontSize: 14, fontWeight: "700" },
 
   pill: { paddingVertical: 6, paddingHorizontal: 10, borderRadius: 999 },
-  pillOn: { backgroundColor: "rgba(64,196,160,0.25)", borderWidth: 1, borderColor: "rgba(64,196,160,0.55)" },
-  pillOff: { backgroundColor: "rgba(255,255,255,0.08)", borderWidth: 1, borderColor: "rgba(255,255,255,0.12)" },
-  pillText: { color: "white", fontSize: 12, fontWeight: "800" },
+  pillOn: {
+    backgroundColor: "rgba(15,118,110,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(15,118,110,0.35)",
+  },
+  pillOff: {
+    backgroundColor: "rgba(0,0,0,0.04)",
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.10)",
+  },
+  pillText: { color: "#0b1220", fontSize: 12, fontWeight: "800" },
 
-  sectionLabel: { marginTop: 8, color: "rgba(255,255,255,0.85)", fontSize: 12, fontWeight: "800" },
+  sectionLabel: { marginTop: 8, color: "#52606d", fontSize: 12, fontWeight: "800" },
 
   chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 10 },
   chip: { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1 },
-  chipOn: { backgroundColor: "rgba(64,196,160,0.25)", borderColor: "rgba(64,196,160,0.55)" },
-  chipOff: { backgroundColor: "rgba(255,255,255,0.06)", borderColor: "rgba(255,255,255,0.10)" },
+  chipOn: {
+    backgroundColor: "rgba(15,118,110,0.12)",
+    borderColor: "rgba(15,118,110,0.35)",
+  },
+  chipOff: { backgroundColor: "white", borderColor: "rgba(0,0,0,0.12)" },
   chipText: { fontSize: 13, fontWeight: "800" },
-  chipTextOn: { color: "white" },
-  chipTextOff: { color: "rgba(255,255,255,0.75)" },
+  chipTextOn: { color: "#0b1220" },
+  chipTextOff: { color: "#52606d" },
 
   inputRow: { flexDirection: "row", gap: 10, marginTop: 10, alignItems: "center" },
-  input: {
-    flex: 1,
-    backgroundColor: "rgba(255,255,255,0.08)",
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    color: "white",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-  },
+  
   addBtn: {
     paddingVertical: 10,
     paddingHorizontal: 14,
     borderRadius: 12,
-    backgroundColor: "rgba(64,196,160,0.25)",
+    backgroundColor: "rgba(15,118,110,0.12)",
     borderWidth: 1,
-    borderColor: "rgba(64,196,160,0.55)",
+    borderColor: "rgba(15,118,110,0.35)",
   },
-  addBtnText: { color: "white", fontWeight: "900" },
-
-  smallMuted: { color: "rgba(255,255,255,0.65)", fontSize: 12 },
+  addBtnText: { color: "#0b1220", fontWeight: "900" },
+  
+  smallMuted: { color: "#52606d", fontSize: 12 },
 
   footerRow: { marginTop: 14, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  saved: { color: "#11c29a", fontWeight: "900" },
+  
 });

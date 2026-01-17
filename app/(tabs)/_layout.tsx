@@ -38,6 +38,17 @@ export default function TabLayout() {
         }}
       />
 
+<Tabs.Screen
+  name="recent"
+  options={{
+    title: "Recent",
+    tabBarIcon: ({ color }) => (
+      <IconSymbol size={26} name="clock.fill" color={color} />
+    ),
+  }}
+/>
+
+
       <Tabs.Screen
         name="restaurants"
         options={{

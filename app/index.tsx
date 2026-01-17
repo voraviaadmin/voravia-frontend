@@ -1,5 +1,12 @@
-import { Redirect } from "expo-router";
+// app/index.tsx
+
+import { useEffect } from "react";
+import { router } from "expo-router";
 
 export default function Index() {
-  return <Redirect href="/(tabs)/home" />;
+  useEffect(() => {
+    router.replace("/context-gate");
+  }, []);
+
+  return null;
 }

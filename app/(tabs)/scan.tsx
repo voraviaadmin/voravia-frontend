@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -6,69 +6,188 @@ import {
   Pressable,
   Platform,
   Alert,
-  TextInput,
-  KeyboardAvoidingView,
+  ActivityIndicator,
+  Image,
+  Linking,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { CameraView, useCameraPermissions, BarcodeScanningResult } from "expo-camera";
+import { CameraView, useCameraPermissions } from "expo-camera";
+import * as ImagePicker from "expo-image-picker";
+
+/**
+ * Expo Camera typing differs across versions. This shim avoids TS errors
+ * while still calling the real method at runtime.
+ */
+type CameraRef = {
+  takePictureAsync: (opts?: any) => Promise<{ uri?: string }>;
+};
 
 export default function ScanScreen() {
   const router = useRouter();
+
+  const cameraRef = useRef<CameraRef | null>(null);
   const [permission, requestPermission] = useCameraPermissions();
-
-  const [paused, setPaused] = useState(false);
-  const [torch, setTorch] = useState<"off" | "on">("off");
-  const [cooldown, setCooldown] = useState(false);
-
-  const [manualCode, setManualCode] = useState("");
-
   const hasPermission = useMemo(() => permission?.granted === true, [permission]);
 
+  const [torch, setTorch] = useState<"off" | "on">("off");
+  const [busy, setBusy] = useState(false);
+  const [previewUri, setPreviewUri] = useState<string | null>(null);
+
+  // Ask for camera permission once on load (only if it can ask again)
   useEffect(() => {
     if (!permission) return;
-    if (!permission.granted && permission.canAskAgain) requestPermission();
+    if (!permission.granted && permission.canAskAgain) {
+      requestPermission();
+    }
   }, [permission, requestPermission]);
 
   const goToResult = useCallback(
-    (code: string, type: string) => {
+    (photoUri: string) => {
       router.push({
         pathname: "/(tabs)/scan-result",
-        params: { code, type },
+        params: { photoUri },
       });
     },
     [router]
   );
 
-  const onBarcodeScanned = useCallback(
-    (result: BarcodeScanningResult) => {
-      if (paused || cooldown) return;
+  const pickFromLibrary = useCallback(async () => {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert("Permission needed", "Please allow Photos access.");
+        return;
+      }
 
-      const value = result.data?.trim();
-      if (!value) return;
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.9,
+      });
 
-      setCooldown(true);
-      goToResult(value, result.type ?? "unknown");
-      setTimeout(() => setCooldown(false), 1200);
-    },
-    [paused, cooldown, goToResult]
-  );
+      if (res.canceled) return;
+      const uri = res.assets?.[0]?.uri;
+      if (!uri) return;
 
-  // Permission loading
+      // Go straight to result (skip preview) OR show preview—your choice.
+      // We'll show preview for consistency.
+      setPreviewUri(uri);
+    } catch (e: any) {
+      Alert.alert("Picker error", e?.message ?? "Failed to pick an image.");
+    }
+  }, []);
+
+  const openSettingsHelp = useCallback(() => {
+    Alert.alert(
+      "Enable Camera",
+      "If camera permission is blocked, open Settings and enable Camera permission for this app. (On iOS Simulator, camera is not available — use Photos.)",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Open Settings",
+          onPress: () => {
+            Linking.openSettings().catch(() => {});
+          },
+        },
+      ]
+    );
+  }, []);
+
+  const takePhoto = useCallback(async () => {
+    try {
+      if (busy) return;
+      if (!cameraRef.current) return;
+
+      setBusy(true);
+
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.8,
+        skipProcessing: false,
+      });
+
+      if (!photo?.uri) throw new Error("No photo uri returned");
+      setPreviewUri(photo.uri);
+    } catch (e: any) {
+      Alert.alert("Camera error", e?.message ?? "Failed to take photo.");
+    } finally {
+      setBusy(false);
+    }
+  }, [busy]);
+
+  // Permission loading state
   if (!permission) {
     return (
       <View style={styles.center}>
         <Text style={styles.title}>Scan</Text>
-        <Text style={styles.sub}>Requesting camera permission…</Text>
+        <Text style={styles.sub}>Requesting permissions…</Text>
+
+        <View style={{ height: 14 }} />
+
+        <Pressable
+          style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
+          onPress={pickFromLibrary}
+        >
+          <Text style={styles.secondaryBtnText}>Use Photos Instead</Text>
+        </Pressable>
       </View>
     );
   }
 
-  // No permission
+  // Preview screen after capture/pick
+  if (previewUri) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <View>
+            <Text style={styles.headerTitle}>Preview</Text>
+            <Text style={styles.headerSub}>Looks good? Analyze it.</Text>
+          </View>
+        </View>
+
+        <View style={styles.previewCard}>
+          <Image source={{ uri: previewUri }} style={styles.previewImg} />
+        </View>
+
+        <View style={styles.footerRow}>
+          <Pressable
+            style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
+            onPress={() => setPreviewUri(null)}
+            disabled={busy}
+          >
+            <Text style={styles.secondaryBtnText}>Choose Another</Text>
+          </Pressable>
+
+          <Pressable
+            style={({ pressed }) => [
+              styles.primaryBtn,
+              pressed && styles.pressed,
+              { flex: 1 },
+            ]}
+            onPress={() => goToResult(previewUri)}
+            disabled={busy}
+          >
+            <Text style={styles.primaryBtnText}>Analyze</Text>
+          </Pressable>
+        </View>
+
+        <Text style={styles.hint}>
+          Tip: On iOS Simulator, use Photos (camera isn’t available).
+        </Text>
+      </View>
+    );
+  }
+
+  /**
+   * IMPORTANT:
+   * Even if camera permission is denied (or simulator), we still show a working “Photos” path.
+   * This prevents getting stuck on simulator.
+   */
   if (!hasPermission) {
     return (
       <View style={styles.center}>
         <Text style={styles.title}>Camera access needed</Text>
-        <Text style={styles.sub}>Enable camera permission to scan barcodes.</Text>
+        <Text style={styles.sub}>Enable camera permission to scan food.</Text>
+
+        <View style={{ height: 12 }} />
 
         <Pressable
           style={({ pressed }) => [styles.primaryBtn, pressed && styles.pressed]}
@@ -79,29 +198,33 @@ export default function ScanScreen() {
 
         <Pressable
           style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
-          onPress={() =>
-            Alert.alert(
-              "Tip",
-              "If permission is blocked, open device Settings and enable Camera for this app."
-            )
-          }
+          onPress={pickFromLibrary}
         >
-          <Text style={styles.secondaryBtnText}>Help</Text>
+          <Text style={styles.secondaryBtnText}>Use Photos Instead</Text>
         </Pressable>
+
+        <Pressable
+          style={({ pressed }) => [styles.ghostBtn, pressed && styles.pressed]}
+          onPress={openSettingsHelp}
+        >
+          <Text style={styles.ghostBtnText}>Help</Text>
+        </Pressable>
+
+        <Text style={styles.hint}>
+          iOS Simulator doesn’t have a real camera. Use Photos to test Scan → Result → Log.
+        </Text>
       </View>
     );
   }
 
+  // Camera screen (real device, or simulator if it ever supported it)
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.select({ ios: "padding", android: undefined })}
-    >
+    <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
         <View>
           <Text style={styles.headerTitle}>Scan Food</Text>
-          <Text style={styles.headerSub}>Hold steady • Good light helps</Text>
+          <Text style={styles.headerSub}>Take a photo of your plate</Text>
         </View>
 
         <Pressable
@@ -112,87 +235,55 @@ export default function ScanScreen() {
         </Pressable>
       </View>
 
-      {/* Camera area */}
+      {/* Camera */}
       <View style={styles.cameraCard}>
-        {/* TRUE PAUSE: unmount camera when paused */}
-        {!paused ? (
-          <CameraView
-            style={StyleSheet.absoluteFill}
-            facing="back"
-            enableTorch={torch === "on"}
-            onBarcodeScanned={onBarcodeScanned}
-            barcodeScannerSettings={{
-              barcodeTypes: ["ean13", "ean8", "upc_a", "upc_e", "code128", "code39", "qr"],
-            }}
-          />
-        ) : (
-          <View style={styles.pausedBackdrop} />
-        )}
+        <CameraView
+          ref={(r) => (cameraRef.current = r as any)}
+          style={StyleSheet.absoluteFill}
+          facing="back"
+          enableTorch={torch === "on"}
+        />
 
-        {/* Overlay */}
         <View style={styles.overlay}>
           <View style={styles.scanFrame} />
-          <Text style={styles.overlayText}>
-            {paused ? "Paused" : "Align barcode inside the frame"}
-          </Text>
-          <Text style={styles.overlayHint}>{paused ? "Tap Resume to continue" : "Scanning…"}</Text>
-
-          {paused && (
-            <Pressable
-              style={({ pressed }) => [styles.resumeBtn, pressed && styles.pressed]}
-              onPress={() => setPaused(false)}
-            >
-              <Text style={styles.resumeBtnText}>Resume Scanning</Text>
-            </Pressable>
-          )}
+          <Text style={styles.overlayText}>Center the plate • Good light helps</Text>
         </View>
       </View>
 
-      {/* Footer controls */}
-      <View style={styles.footer}>
+      {/* Controls */}
+      <View style={styles.footerRow}>
         <Pressable
           style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
-          onPress={() => setPaused((v) => !v)}
+          onPress={pickFromLibrary}
+          disabled={busy}
         >
-          <Text style={styles.secondaryBtnText}>{paused ? "Resume" : "Pause"}</Text>
+          <Text style={styles.secondaryBtnText}>Photos</Text>
         </Pressable>
 
         <Pressable
-          style={({ pressed }) => [styles.ghostBtn, pressed && styles.pressed]}
-          onPress={() =>
-            Alert.alert(
-              "Tips",
-              "Move closer, steady your hand, and increase light. Barcodes need sharp focus."
-            )
-          }
+          style={({ pressed }) => [
+            styles.primaryBtn,
+            pressed && styles.pressed,
+            { flex: 1 },
+          ]}
+          onPress={takePhoto}
+          disabled={busy}
         >
-          <Text style={styles.ghostBtnText}>Tips</Text>
+          {busy ? (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+              <ActivityIndicator />
+              <Text style={styles.primaryBtnText}>Capturing…</Text>
+            </View>
+          ) : (
+            <Text style={styles.primaryBtnText}>Take Photo</Text>
+          )}
         </Pressable>
       </View>
 
-      {/* Manual entry fallback */}
-      <View style={styles.manualCard}>
-        <Text style={styles.manualTitle}>Manual barcode</Text>
-        <TextInput
-          value={manualCode}
-          onChangeText={setManualCode}
-          placeholder="Enter barcode digits (e.g., 0123456789012)"
-          keyboardType="number-pad"
-          style={styles.input}
-        />
-
-        <Pressable
-          style={({ pressed }) => [styles.primaryBtn, pressed && styles.pressed]}
-          onPress={() => {
-            const code = manualCode.trim();
-            if (!code) return Alert.alert("Enter a barcode", "Type the digits and try again.");
-            goToResult(code, "manual");
-          }}
-        >
-          <Text style={styles.primaryBtnText}>Lookup</Text>
-        </Pressable>
-      </View>
-    </KeyboardAvoidingView>
+      <Text style={styles.hint}>
+        If camera permission is blocked (or simulator), use Photos.
+      </Text>
+    </View>
   );
 }
 
@@ -223,17 +314,12 @@ const styles = StyleSheet.create({
   iconBtnText: { fontWeight: "900", color: "#0B2A2F" },
 
   cameraCard: {
-    height: 360,
+    height: 420,
     borderRadius: 18,
     overflow: "hidden",
     borderWidth: 1,
     borderColor: "#DCECEF",
     backgroundColor: "#000",
-  },
-  pausedBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "#0B2A2F",
-    opacity: 0.92,
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,
@@ -242,9 +328,9 @@ const styles = StyleSheet.create({
     paddingBottom: 18,
   },
   scanFrame: {
-    width: 280,
-    height: 170,
-    borderRadius: 16,
+    width: 290,
+    height: 210,
+    borderRadius: 18,
     borderWidth: 2,
     borderColor: "rgba(255,255,255,0.85)",
     backgroundColor: "rgba(255,255,255,0.06)",
@@ -252,25 +338,21 @@ const styles = StyleSheet.create({
   overlayText: {
     marginTop: 14,
     color: "rgba(255,255,255,0.92)",
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "800",
   },
-  overlayHint: {
-    marginTop: 6,
-    color: "rgba(255,255,255,0.7)",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  resumeBtn: {
-    marginTop: 14,
-    backgroundColor: "#0E7C86",
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 14,
-  },
-  resumeBtnText: { color: "#FFFFFF", fontWeight: "900" },
 
-  footer: {
+  previewCard: {
+    flex: 1,
+    borderRadius: 18,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "#DCECEF",
+    backgroundColor: "#000",
+  },
+  previewImg: { width: "100%", height: "100%", resizeMode: "cover" },
+
+  footerRow: {
     flexDirection: "row",
     gap: 10,
     paddingVertical: 12,
@@ -281,21 +363,25 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     borderRadius: 14,
     alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
   },
   primaryBtnText: { color: "#FFFFFF", fontWeight: "900" },
 
   secondaryBtn: {
-    flex: 1,
     backgroundColor: "#FFFFFF",
     borderWidth: 1,
     borderColor: "#E4EFF1",
     paddingVertical: 12,
     borderRadius: 14,
     alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
   },
   secondaryBtnText: { color: "#0B2A2F", fontWeight: "900" },
 
   ghostBtn: {
+    marginTop: 10,
     paddingVertical: 12,
     paddingHorizontal: 14,
     borderRadius: 14,
@@ -305,27 +391,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#F1FBFC",
   },
   ghostBtnText: { color: "#0B2A2F", fontWeight: "900" },
-
-  manualCard: {
-    marginTop: 6,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "#E4EFF1",
-    padding: 14,
-  },
-  manualTitle: { fontSize: 13, fontWeight: "900", color: "#0B2A2F" },
-  input: {
-    marginTop: 10,
-    borderWidth: 1,
-    borderColor: "#DCECEF",
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: Platform.select({ ios: 12, android: 10, default: 10 }),
-    backgroundColor: "#F7FCFD",
-    fontWeight: "700",
-    color: "#0B2A2F",
-  },
 
   pressed: { opacity: 0.86 },
 
@@ -338,4 +403,12 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 22, fontWeight: "900", color: "#0B2A2F" },
   sub: { marginTop: 8, color: "#4A6468", textAlign: "center" },
+
+  hint: {
+    marginTop: 10,
+    color: "#4A6468",
+    textAlign: "center",
+    fontWeight: "600",
+    lineHeight: 18,
+  },
 });

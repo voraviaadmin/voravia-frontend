@@ -1,323 +1,532 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet, Pressable, Platform, ActivityIndicator, ScrollView } from "react-native";
+import React, { useState, useMemo, useEffect, useCallback } from "react";
+import { View, Text, StyleSheet, Pressable, Image, ScrollView, Alert } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { useMe } from "../../src/hooks/useMe";
 
-type Verdict = "FIT" | "MODERATE" | "AVOID";
 
-type OFFProductResponse = {
-  status: number; // 1 found, 0 not found
-  product?: {
-    product_name?: string;
-    product_name_en?: string;
-    brands?: string;
-    image_front_url?: string;
-    nutriments?: Record<string, number | string | undefined>;
-    nutriscore_grade?: string; // sometimes exists
-    nova_group?: number; // sometimes exists
+
+type OldShape = {
+  scanId?: string;
+  candidates?: { name: string; confidence: number }[];
+  nutrition?: {
+    calories?: number;
+    protein_g?: number;
+    carbs_g?: number;
+    fat_g?: number;
+    sugar_g?: number;
+    sodium_mg?: number;
+    fiber_g?: number;
+  };
+  rating?: { score: number; label: string; reasons?: string[]; tips?: string[] };
+};
+
+type NewShape = {
+  scanId?: string;
+  dishName?: string;
+  confidence?: number;
+  score?: number;
+  label?: string;
+  why?: string[];
+  tips?: string[];
+  estimatedNutrition?: {
+    caloriesKcal?: number;
+    proteinG?: number;
+    carbsG?: number;
+    fatG?: number;
+    fiberG?: number;
+    sugarG?: number;
+    sodiumMg?: number;
   };
 };
 
-function toNumber(v: unknown): number | null {
-  if (v === null || v === undefined) return null;
-  const n = typeof v === "number" ? v : Number(String(v));
-  return Number.isFinite(n) ? n : null;
+type Normalized = {
+  scanId: string | null;
+  dishName: string;
+  confidencePct: number | null;
+  score: number;
+  label: "Great" | "Okay" | "Limit" | "Avoid";
+  why: string[];
+  tips: string[];
+  nutrition: {
+    calories?: number;
+    protein_g?: number;
+    carbs_g?: number;
+    fat_g?: number;
+    fiber_g?: number;
+    sugar_g?: number;
+    sodium_mg?: number;
+  };
+};
+
+type LogForOption = {
+  id: string;
+  name: string;
+};
+
+
+function getApiBaseUrl() {
+  return (
+    process.env.EXPO_PUBLIC_API_BASE_URL ||
+    process.env.EXPO_PUBLIC_API_URL ||
+    "http://localhost:8787"
+  );
 }
 
-/**
- * Very simple MVP scoring (per 100g if available).
- * Tune later per health profile.
- */
-function scoreFood(n: {
-  sugar_100g?: number | null;
-  sodium_100g?: number | null; // grams
-  salt_100g?: number | null;   // grams
-  saturated_fat_100g?: number | null;
-  energy_kcal_100g?: number | null;
-}) : { verdict: Verdict; reasons: string[] } {
-  const reasons: string[] = [];
-  let risk = 0;
+function normalize(payload: any): Normalized {
+  // New shape
+  if (payload && (payload.dishName || payload.estimatedNutrition || payload.why || payload.tips)) {
+    const p = payload as NewShape;
 
-  // Sugar thresholds (g/100g)
-  if (n.sugar_100g != null) {
-    if (n.sugar_100g >= 20) { risk += 2; reasons.push("High sugar"); }
-    else if (n.sugar_100g >= 10) { risk += 1; reasons.push("Moderate sugar"); }
-  } else {
-    reasons.push("Sugar data missing");
+    const score = Number.isFinite(Number(p.score)) ? Math.round(Number(p.score)) : 0;
+    const labelRaw = String(p.label || "").toLowerCase();
+    const label: Normalized["label"] =
+      labelRaw === "great"
+        ? "Great"
+        : labelRaw === "okay"
+        ? "Okay"
+        : labelRaw === "avoid"
+        ? "Avoid"
+        : "Limit";
+
+    return {
+      scanId: p.scanId ?? null,
+      dishName: p.dishName ? String(p.dishName) : "Unknown dish",
+      confidencePct: Number.isFinite(Number(p.confidence)) ? Math.round(Number(p.confidence)) : null,
+      score: Math.max(0, Math.min(100, score)),
+      label,
+      why: Array.isArray(p.why) ? p.why.map(String).slice(0, 10) : [],
+      tips: Array.isArray(p.tips) ? p.tips.map(String).slice(0, 10) : [],
+      nutrition: {
+        calories: Number(p.estimatedNutrition?.caloriesKcal ?? undefined),
+        protein_g: Number(p.estimatedNutrition?.proteinG ?? undefined),
+        carbs_g: Number(p.estimatedNutrition?.carbsG ?? undefined),
+        fat_g: Number(p.estimatedNutrition?.fatG ?? undefined),
+        fiber_g: Number(p.estimatedNutrition?.fiberG ?? undefined),
+        sugar_g: Number(p.estimatedNutrition?.sugarG ?? undefined),
+        sodium_mg: Number(p.estimatedNutrition?.sodiumMg ?? undefined),
+      },
+    };
   }
 
-  // Sodium: OpenFoodFacts often provides sodium_100g in grams (g/100g).
-  // Convert to mg for messaging.
-  const sodiumG = n.sodium_100g ?? null;
-  const saltG = n.salt_100g ?? null;
-  const sodiumMg = sodiumG != null ? sodiumG * 1000 : null;
-  const saltMg = saltG != null ? saltG * 1000 : null;
+  // Old shape
+  const o = (payload || {}) as OldShape;
+  const top = o.candidates?.[0];
+  const score = Number.isFinite(Number(o.rating?.score)) ? Math.round(Number(o.rating?.score)) : 0;
+  const labelRaw = String(o.rating?.label || "").toLowerCase();
+  const label: Normalized["label"] =
+    labelRaw === "great" ? "Great" : labelRaw === "okay" ? "Okay" : "Limit";
 
-  if (sodiumMg != null) {
-    if (sodiumMg >= 600) { risk += 2; reasons.push("High sodium"); }
-    else if (sodiumMg >= 300) { risk += 1; reasons.push("Moderate sodium"); }
-  } else if (saltMg != null) {
-    // If sodium missing but salt exists, approximate sodium as ~40% of salt.
-    const approxSodiumMg = saltMg * 0.4;
-    if (approxSodiumMg >= 600) { risk += 2; reasons.push("High sodium (estimated)"); }
-    else if (approxSodiumMg >= 300) { risk += 1; reasons.push("Moderate sodium (estimated)"); }
-  } else {
-    reasons.push("Sodium data missing");
-  }
+  return {
+    scanId: o.scanId ?? null,
+    dishName: top?.name ? String(top.name) : "Unknown dish",
+    confidencePct:
+      top && Number.isFinite(Number(top.confidence))
+        ? Math.round(Number(top.confidence) * 100)
+        : null,
+    score: Math.max(0, Math.min(100, score)),
+    label,
+    why: Array.isArray(o.rating?.reasons) ? o.rating.reasons.map(String).slice(0, 10) : [],
+    tips: Array.isArray(o.rating?.tips) ? o.rating.tips.map(String).slice(0, 10) : [],
+    nutrition: {
+      calories: o.nutrition?.calories,
+      protein_g: o.nutrition?.protein_g,
+      carbs_g: o.nutrition?.carbs_g,
+      fat_g: o.nutrition?.fat_g,
+      fiber_g: o.nutrition?.fiber_g,
+      sugar_g: o.nutrition?.sugar_g,
+      sodium_mg: o.nutrition?.sodium_mg,
+    },
+  };
+}
 
-  // Saturated fat (g/100g)
-  if (n.saturated_fat_100g != null) {
-    if (n.saturated_fat_100g >= 5) { risk += 2; reasons.push("High saturated fat"); }
-    else if (n.saturated_fat_100g >= 2) { risk += 1; reasons.push("Moderate saturated fat"); }
-  } else {
-    reasons.push("Sat fat data missing");
-  }
-
-  // Verdict
-  let verdict: Verdict = "FIT";
-  if (risk >= 4) verdict = "AVOID";
-  else if (risk >= 2) verdict = "MODERATE";
-
-  // Keep reasons concise
-  const cleaned = reasons.filter((r) => !r.includes("missing")).slice(0, 3);
-  if (cleaned.length === 0) cleaned.push("Limited nutrition data; review label");
-
-  return { verdict, reasons: cleaned };
+function formatMaybe(n: any, unit: string) {
+  if (!Number.isFinite(Number(n))) return "—";
+  const v = Math.round(Number(n));
+  return `${v} ${unit}`;
 }
 
 export default function ScanResultScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ code?: string; type?: string }>();
+  const params = useLocalSearchParams();
 
-  const code = params.code?.toString() ?? "";
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [data, setData] = useState<OFFProductResponse | null>(null);
+  const photoUri =
+    typeof params.photoUri === "string"
+      ? params.photoUri
+      : Array.isArray(params.photoUri)
+      ? params.photoUri[0]
+      : "";
 
+  const { me, activeMember, loading: meLoading, error: meError, refresh: refreshMe } = useMe();
+
+  const [busy, setBusy] = useState(true);
+  const [raw, setRaw] = useState<unknown>(null);
+  const [errorText, setErrorText] = useState<string | null>(null);
+
+  const [mealType, setMealType] = useState<"breakfast" | "lunch" | "dinner" | "snack">(() => {
+    const h = new Date().getHours();
+    if (h < 11) return "breakfast";
+    if (h < 15) return "lunch";
+    if (h < 21) return "dinner";
+    return "snack";
+  });
+
+  // Build “Log for” list from /v1/me (single source of truth)
+  const logForOptions = useMemo<LogForOption[]>(() => {
+    if (!me) return [{ id: "u_self", name: "Me" }];
+  
+    if (me.mode === "family") {
+      const members: LogForOption[] = (me.family?.members || []).map(
+        (m: { id: string; displayName?: string }) => ({
+          id: String(m.id),
+          name: String(m.displayName || m.id),
+        })
+      );
+  
+      return members.length
+        ? members
+        : [{ id: me.userId || "u_self", name: "Me" }];
+    }
+  
+    return [{ id: me.userId || "u_self", name: "Me" }];
+  }, [me]);
+  
+
+  const [logForUserId, setLogForUserId] = useState<string>("u_self");
+
+  // Keep selection valid + default to active family member if present
   useEffect(() => {
-    let alive = true;
+    if (!me) return;
 
-    async function run() {
-      setLoading(true);
-      setError(null);
-      setData(null);
-
-      if (!code) {
-        setError("No barcode provided.");
-        setLoading(false);
-        return;
-      }
-
-      try {
-        // Open Food Facts: Get product by barcode endpoint
-        // https://world.openfoodfacts.org/api/v0/product/{barcode}.json
-        const url = `https://world.openfoodfacts.org/api/v0/product/${encodeURIComponent(code)}.json`;
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`Network error: ${res.status}`);
-        const json = (await res.json()) as OFFProductResponse;
-
-        if (!alive) return;
-        setData(json);
-
-        if (json.status !== 1) {
-          setError("Product not found in Open Food Facts.");
-        }
-      } catch (e: any) {
-        if (!alive) return;
-        setError(e?.message ?? "Unknown error");
-      } finally {
-        if (!alive) return;
-        setLoading(false);
-      }
+    // Prefer active member if family mode
+    if (me.mode === "family" && activeMember?.id) {
+      setLogForUserId(String(activeMember.id));
+      return;
     }
 
-    run();
-    return () => { alive = false; };
-  }, [code]);
+    // Otherwise ensure current selection still exists
+    const exists = logForOptions.some(
+      (x: LogForOption) => x.id === logForUserId
+    );    
 
-  const product = data?.product;
+    if (!exists) setLogForUserId(logForOptions[0]?.id || "u_self");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [me, activeMember?.id, logForOptions]);
 
-  const title = product?.product_name_en || product?.product_name || "Unknown product";
-  const brand = product?.brands || "—";
-  const nutr = product?.nutriments ?? {};
+  const normalized = useMemo(() => normalize(raw), [raw]);
 
-  const nutrition = useMemo(() => {
-    const energyKcal = toNumber(nutr["energy-kcal_100g"]) ?? toNumber(nutr["energy-kcal_serving"]);
-    const fat = toNumber(nutr["fat_100g"]);
-    const carbs = toNumber(nutr["carbohydrates_100g"]);
-    const protein = toNumber(nutr["proteins_100g"]);
-    const sugar = toNumber(nutr["sugars_100g"]);
-    const sodium = toNumber(nutr["sodium_100g"]); // g/100g
-    const salt = toNumber(nutr["salt_100g"]);     // g/100g
-    const satFat = toNumber(nutr["saturated-fat_100g"]);
+  const analyze = useCallback(async () => {
+    if (!photoUri) return;
 
-    return { energyKcal, fat, carbs, protein, sugar, sodium, salt, satFat };
-  }, [nutr]);
+    try {
+      setBusy(true);
+      setErrorText(null);
 
-  const { verdict, reasons } = useMemo(() => scoreFood({
-    sugar_100g: nutrition.sugar,
-    sodium_100g: nutrition.sodium,
-    salt_100g: nutrition.salt,
-    saturated_fat_100g: nutrition.satFat,
-    energy_kcal_100g: nutrition.energyKcal,
-  }), [nutrition]);
+      const api = getApiBaseUrl();
+      const form = new FormData();
+      form.append(
+        "image",
+        {
+          uri: String(photoUri),
+          name: "scan.jpg",
+          type: "image/jpeg",
+        } as any
+      );
 
-  const verdictStyle = verdict === "FIT" ? styles.verdictFit : verdict === "MODERATE" ? styles.verdictModerate : styles.verdictAvoid;
-  const verdictText = verdict === "FIT" ? "Fits" : verdict === "MODERATE" ? "Moderate" : "Avoid";
+      const resp = await fetch(`${api}/v1/scans`, { method: "POST", body: form });
+
+      const text = await resp.text();
+      let json: any = null;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        throw new Error(`Scan API returned non-JSON: ${text.slice(0, 120)}`);
+      }
+
+      if (!resp.ok) throw new Error(json?.message || json?.error || `Scan failed (${resp.status})`);
+      setRaw(json);
+    } catch (e: any) {
+      setErrorText(e?.message ?? "Scan failed");
+      setRaw(null);
+    } finally {
+      setBusy(false);
+    }
+  }, [photoUri]);
+
+  // Analyze once
+  useEffect(() => {
+    analyze();
+  }, [analyze]);
+
+  const logMeal = useCallback(async () => {
+    try {
+      const api = getApiBaseUrl();
+      const payload = {
+        source: "scan",
+        userId: logForUserId,
+        mealType,
+
+        scanId: normalized.scanId,
+        dishName: normalized.dishName,
+        confidence: normalized.confidencePct,
+        score: normalized.score,
+        label: normalized.label,
+        why: normalized.why,
+        tips: normalized.tips,
+        nutrition: normalized.nutrition,
+        photoUri: String(photoUri || ""),
+      };
+
+      const resp = await fetch(`${api}/v1/logs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(json?.message || json?.error || "Log failed");
+
+      Alert.alert("Logged", "Saved to your recent scans.");
+      router.push("/(tabs)/home");
+    } catch (e: any) {
+      Alert.alert("Log failed", e?.message ?? "Could not save.");
+    }
+  }, [mealType, logForUserId, photoUri, router, normalized]);
 
   return (
-    <View style={styles.container}>
+    <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 24 }}>
       <Text style={styles.title}>Scan Result</Text>
-      <Text style={styles.sub}>Barcode: {code}</Text>
 
-      {loading ? (
-        <View style={styles.centerBlock}>
-          <ActivityIndicator />
-          <Text style={styles.muted}>Looking up product…</Text>
-        </View>
-      ) : error ? (
+      {!!photoUri && (
         <View style={styles.card}>
-          <Text style={styles.errTitle}>Couldn’t load product</Text>
-          <Text style={styles.errText}>{error}</Text>
-
-          <Pressable style={({ pressed }) => [styles.primaryBtn, pressed && styles.pressed]} onPress={() => router.back()}>
-            <Text style={styles.primaryBtnText}>Scan another</Text>
-          </Pressable>
+          <Text style={styles.cardLabel}>Photo</Text>
+          <Image source={{ uri: String(photoUri) }} style={styles.photo} />
         </View>
-      ) : (
-        <ScrollView contentContainerStyle={{ paddingBottom: 20 }}>
-          <View style={styles.card}>
-            <Text style={styles.prodTitle}>{title}</Text>
-            <Text style={styles.muted}>Brand: {brand}</Text>
+      )}
 
-            <View style={[styles.verdictPill, verdictStyle]}>
-              <Text style={styles.verdictText}>{verdictText}</Text>
-            </View>
+      <View style={styles.card}>
+        <Text style={styles.dishName}>{normalized.dishName}</Text>
+        <Text style={styles.sub}>
+          Confidence: {normalized.confidencePct == null ? "—" : `${normalized.confidencePct}%`}
+        </Text>
 
-            <Text style={styles.sectionTitle}>Why</Text>
-            {reasons.map((r, i) => (
-              <Text key={i} style={styles.bullet}>• {r}</Text>
-            ))}
-          </View>
-
-          <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Nutrition (per 100g when available)</Text>
-
-            <Row label="Calories" value={nutrition.energyKcal != null ? `${Math.round(nutrition.energyKcal)} kcal` : "—"} />
-            <Row label="Protein" value={nutrition.protein != null ? `${nutrition.protein.toFixed(1)} g` : "—"} />
-            <Row label="Carbs" value={nutrition.carbs != null ? `${nutrition.carbs.toFixed(1)} g` : "—"} />
-            <Row label="Fat" value={nutrition.fat != null ? `${nutrition.fat.toFixed(1)} g` : "—"} />
-            <Row label="Sugar" value={nutrition.sugar != null ? `${nutrition.sugar.toFixed(1)} g` : "—"} />
-
-            {/* sodium/salt shown in mg */}
-            <Row
-              label="Sodium"
-              value={
-                nutrition.sodium != null
-                  ? `${Math.round(nutrition.sodium * 1000)} mg`
-                  : nutrition.salt != null
-                    ? `${Math.round(nutrition.salt * 1000 * 0.4)} mg (est.)`
-                    : "—"
-              }
-            />
-            <Row label="Sat Fat" value={nutrition.satFat != null ? `${nutrition.satFat.toFixed(1)} g` : "—"} />
-
-            <Text style={styles.miniNote}>
-              Note: Open Food Facts data varies by product. If nutrients are missing, we’ll fall back to label/photo parsing later.
+        <View style={styles.pillRow}>
+          <View
+            style={[
+              styles.pill,
+              normalized.score >= 80
+                ? styles.pillGood
+                : normalized.score >= 60
+                ? styles.pillOk
+                : styles.pillBad,
+            ]}
+          >
+            <Text style={styles.pillText}>
+              {normalized.label} • {normalized.score}/100
             </Text>
           </View>
+        </View>
 
-          <View style={styles.actions}>
-            <Pressable style={({ pressed }) => [styles.primaryBtn, pressed && styles.pressed]} onPress={() => router.back()}>
-              <Text style={styles.primaryBtnText}>Scan another</Text>
-            </Pressable>
+        {busy && <Text style={styles.muted}>Analyzing…</Text>}
+        {errorText && <Text style={styles.error}>Backend scan failed: {errorText}</Text>}
 
-            <Pressable style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]} onPress={() => router.push("/(tabs)/home")}>
-              <Text style={styles.secondaryBtnText}>Back to Home</Text>
-            </Pressable>
-          </View>
-        </ScrollView>
-      )}
-    </View>
-  );
-}
+        <Text style={styles.section}>Why</Text>
+        {normalized.why.length ? (
+          normalized.why.map((w, i) => (
+            <Text key={`w-${i}`} style={styles.bullet}>
+              • {w}
+            </Text>
+          ))
+        ) : (
+          <Text style={styles.muted}>—</Text>
+        )}
 
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.row}>
-      <Text style={styles.rowLabel}>{label}</Text>
-      <Text style={styles.rowValue}>{value}</Text>
-    </View>
+        <Text style={styles.section}>Tips</Text>
+        {normalized.tips.length ? (
+          normalized.tips.map((t, i) => (
+            <Text key={`t-${i}`} style={styles.bullet}>
+              • {t}
+            </Text>
+          ))
+        ) : (
+          <Text style={styles.muted}>—</Text>
+        )}
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.section}>Estimated nutrition</Text>
+
+        <View style={styles.nRow}>
+          <Text style={styles.nKey}>Calories</Text>
+          <Text style={styles.nVal}>{formatMaybe(normalized.nutrition.calories, "kcal")}</Text>
+        </View>
+        <View style={styles.nRow}>
+          <Text style={styles.nKey}>Protein</Text>
+          <Text style={styles.nVal}>{formatMaybe(normalized.nutrition.protein_g, "g")}</Text>
+        </View>
+        <View style={styles.nRow}>
+          <Text style={styles.nKey}>Carbs</Text>
+          <Text style={styles.nVal}>{formatMaybe(normalized.nutrition.carbs_g, "g")}</Text>
+        </View>
+        <View style={styles.nRow}>
+          <Text style={styles.nKey}>Fat</Text>
+          <Text style={styles.nVal}>{formatMaybe(normalized.nutrition.fat_g, "g")}</Text>
+        </View>
+        <View style={styles.nRow}>
+          <Text style={styles.nKey}>Fiber</Text>
+          <Text style={styles.nVal}>{formatMaybe(normalized.nutrition.fiber_g, "g")}</Text>
+        </View>
+        <View style={styles.nRow}>
+          <Text style={styles.nKey}>Sugar</Text>
+          <Text style={styles.nVal}>{formatMaybe(normalized.nutrition.sugar_g, "g")}</Text>
+        </View>
+        <View style={styles.nRow}>
+          <Text style={styles.nKey}>Sodium</Text>
+          <Text style={styles.nVal}>{formatMaybe(normalized.nutrition.sodium_mg, "mg")}</Text>
+        </View>
+
+        <Text style={styles.mutedSmall}>
+          Nutrition is an estimate from photo analysis. We’ll improve accuracy with portion sizing + user
+          corrections.
+        </Text>
+      </View>
+
+      <Text style={styles.section}>Log as</Text>
+      <View style={styles.segmentRow}>
+        {(["breakfast", "lunch", "dinner", "snack"] as const).map((m) => (
+          <Pressable
+            key={m}
+            onPress={() => setMealType(m)}
+            style={[styles.segmentBtn, mealType === m && styles.segmentBtnActive]}
+          >
+            <Text style={[styles.segmentText, mealType === m && styles.segmentTextActive]}>
+              {m[0].toUpperCase() + m.slice(1)}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+
+      <Text style={styles.section}>Log for</Text>
+      <View style={styles.segmentRow}>
+        {logForOptions.map((u: LogForOption) => (
+          <Pressable
+            key={u.id}
+            onPress={() => setLogForUserId(u.id)}
+            style={[styles.segmentBtn, logForUserId === u.id && styles.segmentBtnActive]}
+          >
+            <Text style={[styles.segmentText, logForUserId === u.id && styles.segmentTextActive]}>
+              {u.name}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+
+      {/* Helpful debug while wiring /v1/me (remove later) */}
+      <Text style={styles.mutedSmall}>
+        /v1/me:{" "}
+        {meLoading ? "loading…" : meError ? "error" : me?.mode ? `mode=${me.mode}` : "unknown"}{" "}
+        {meError ? (
+          <>
+            {" "}
+            • <Text onPress={refreshMe} style={{ textDecorationLine: "underline" }}>
+              retry
+            </Text>
+          </>
+        ) : null}
+      </Text>
+
+      <View style={styles.btnRow}>
+        <Pressable style={styles.primaryBtn} onPress={logMeal} disabled={busy}>
+          <Text style={styles.primaryBtnText}>Log this meal</Text>
+        </Pressable>
+
+        <Pressable
+          style={styles.secondaryBtn}
+          onPress={() => router.replace("/(tabs)/scan")}
+          disabled={busy}
+        >
+          <Text style={styles.secondaryBtnText}>Scan another</Text>
+        </Pressable>
+
+        <Pressable style={styles.ghostBtn} onPress={analyze} disabled={busy}>
+          <Text style={styles.ghostBtnText}>Re-analyze</Text>
+        </Pressable>
+      </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#F5FAFB",
-    paddingTop: Platform.select({ ios: 64, android: 36, default: 36 }),
-    paddingHorizontal: 16,
-  },
-  title: { fontSize: 28, fontWeight: "900", color: "#0B2A2F" },
-  sub: { marginTop: 6, color: "#4A6468", fontWeight: "700" },
-
-  centerBlock: { marginTop: 18, alignItems: "center", gap: 10 },
+  container: { flex: 1, backgroundColor: "#F5FAFB", paddingHorizontal: 16, paddingTop: 16 },
+  title: { fontSize: 32, fontWeight: "900", color: "#0B2A2F", marginBottom: 10 },
 
   card: {
-    marginTop: 14,
     backgroundColor: "#FFFFFF",
     borderRadius: 18,
+    padding: 14,
     borderWidth: 1,
     borderColor: "#E4EFF1",
-    padding: 16,
+    marginBottom: 12,
   },
 
-  prodTitle: { fontSize: 18, fontWeight: "900", color: "#0B2A2F" },
-  muted: { marginTop: 6, color: "#4A6468", fontWeight: "600" },
+  cardLabel: { fontWeight: "900", color: "#0B2A2F", marginBottom: 8 },
+  photo: { width: "100%", height: 200, borderRadius: 14, backgroundColor: "#000" },
 
-  verdictPill: {
-    marginTop: 12,
-    alignSelf: "flex-start",
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 999,
-  },
-  verdictText: { fontWeight: "900", color: "#0B2A2F" },
-  verdictFit: { backgroundColor: "#E7FBF7", borderWidth: 1, borderColor: "#BFEDE2" },
-  verdictModerate: { backgroundColor: "#FFF7E7", borderWidth: 1, borderColor: "#F1D9A6" },
-  verdictAvoid: { backgroundColor: "#FFEDED", borderWidth: 1, borderColor: "#F1B1B1" },
+  dishName: { fontSize: 24, fontWeight: "900", color: "#0B2A2F" },
+  sub: { marginTop: 6, color: "#4A6468", fontWeight: "700" },
 
-  sectionTitle: { marginTop: 14, fontSize: 13, fontWeight: "900", color: "#0B2A2F" },
-  bullet: { marginTop: 8, color: "#0B2A2F", fontWeight: "700" },
+  pillRow: { flexDirection: "row", marginTop: 10, marginBottom: 8 },
+  pill: { borderRadius: 999, paddingVertical: 8, paddingHorizontal: 12, borderWidth: 1 },
+  pillGood: { backgroundColor: "#E7FAF3", borderColor: "#BFECDD" },
+  pillOk: { backgroundColor: "#FFF4DF", borderColor: "#F0D3A1" },
+  pillBad: { backgroundColor: "#FFE8E8", borderColor: "#F1B9B9" },
+  pillText: { fontWeight: "900", color: "#0B2A2F" },
 
-  row: { marginTop: 10, flexDirection: "row", justifyContent: "space-between" },
-  rowLabel: { color: "#4A6468", fontWeight: "800" },
-  rowValue: { color: "#0B2A2F", fontWeight: "900" },
+  section: { marginTop: 10, fontWeight: "900", color: "#0B2A2F", fontSize: 16 },
+  bullet: { marginTop: 6, color: "#0B2A2F", fontWeight: "700" },
 
-  miniNote: { marginTop: 12, color: "#6B8387", fontSize: 12, fontWeight: "600", lineHeight: 16 },
+  muted: { marginTop: 10, color: "#4A6468", fontWeight: "700" },
+  mutedSmall: { marginTop: 10, color: "#4A6468", fontWeight: "600", fontSize: 12, lineHeight: 18 },
 
-  actions: { paddingBottom: 22 },
-  primaryBtn: {
-    marginTop: 14,
-    backgroundColor: "#0E7C86",
-    paddingVertical: 14,
-    borderRadius: 14,
-    alignItems: "center",
-  },
+  error: { marginTop: 10, color: "#B00020", fontWeight: "800" },
+
+  nRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 10 },
+  nKey: { color: "#4A6468", fontWeight: "800" },
+  nVal: { color: "#0B2A2F", fontWeight: "900" },
+
+  btnRow: { gap: 10, marginTop: 6 },
+  primaryBtn: { backgroundColor: "#0E7C86", paddingVertical: 14, borderRadius: 14, alignItems: "center" },
   primaryBtnText: { color: "#FFFFFF", fontWeight: "900" },
 
   secondaryBtn: {
-    marginTop: 10,
     backgroundColor: "#FFFFFF",
     borderWidth: 1,
     borderColor: "#E4EFF1",
-    paddingVertical: 14,
+    paddingVertical: 12,
     borderRadius: 14,
     alignItems: "center",
   },
   secondaryBtnText: { color: "#0B2A2F", fontWeight: "900" },
 
-  errTitle: { fontSize: 16, fontWeight: "900", color: "#0B2A2F" },
-  errText: { marginTop: 8, color: "#4A6468", fontWeight: "600", lineHeight: 18 },
+  ghostBtn: {
+    backgroundColor: "#F1FBFC",
+    borderWidth: 1,
+    borderColor: "#CFE8EA",
+    paddingVertical: 12,
+    borderRadius: 14,
+    alignItems: "center",
+  },
+  ghostBtnText: { color: "#0B2A2F", fontWeight: "900" },
 
-  pressed: { opacity: 0.86 },
+  segmentRow: { flexDirection: "row", gap: 8, marginTop: 8, flexWrap: "wrap" },
+  segmentBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#E4EFF1",
+    backgroundColor: "#FFFFFF",
+  },
+  segmentBtnActive: { backgroundColor: "#E7FAF3", borderColor: "#BFECDD" },
+  segmentText: { fontWeight: "900", color: "#0B2A2F" },
+  segmentTextActive: { color: "#0B2A2F" },
 });
