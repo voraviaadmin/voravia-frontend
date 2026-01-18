@@ -1,8 +1,9 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Platform } from "react-native";
-import { useRouter, useFocusEffect } from "expo-router";
+import { useRouter, useFocusEffect, router } from "expo-router";
 import Svg, { Circle } from "react-native-svg";
 import { fetchMe, getApiBaseUrl, MeResponse } from "../lib/me";
+
 
 type DaySummary = {
   dailyScore?: number;
@@ -413,11 +414,24 @@ const c = classifyTotals(nutritionTotals, th);
 
           {nextWinItems.length ? (
             <View style={{ gap: 6, marginTop: 6 }}>
+
+
               {nextWinItems.map((it, idx) => (
-                <Text key={idx} style={styles.quickText}>
-                  • {it.name}
-                </Text>
+                <Pressable
+                  key={idx}
+                  onPress={() =>
+                    router.push({
+                      pathname: "/(tabs)/restaurants",
+                      params: { q: it.name },
+                    })
+                  }
+                  style={{ paddingVertical: 6 }}
+                >
+                  <Text style={styles.quickText}>• {it.name}</Text>
+                </Pressable>
               ))}
+
+
             </View>
           ) : (
             <Text style={styles.quickText}>

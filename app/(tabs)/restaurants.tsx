@@ -50,6 +50,7 @@ const BASE_CUISINES = [
 const UPLOADKEY_BY_PLACEID_KEY = "voravia:uploadKeyByPlaceId";
 const ITEMS_BY_UPLOADKEY_KEY = "voravia:itemsByUploadKey";
 
+
 function uniqCaseInsensitive(arr: string[]) {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -206,7 +207,12 @@ async function setMapValue(mapKey: string, k: string, v: any) {
 }
 
 export default function RestaurantsScreen() {
-  const params = useLocalSearchParams<{ autostart?: string }>();
+
+  const params = useLocalSearchParams<{ q?: string; autostart?: string }>();
+
+  const incomingQ =
+    typeof params.q === "string" ? params.q.trim() : "";
+  
 
   const [loading, setLoading] = useState(false);
   const [places, setPlaces] = useState<Place[]>([]);
@@ -225,6 +231,8 @@ export default function RestaurantsScreen() {
 const [loc, setLoc] = useState<VoraviaLocation | null>(null);
 const [locError, setLocError] = useState<string | null>(null);
 const [locLoading, setLocLoading] = useState(false);
+
+
 
 const loadLocation = useCallback(async () => {
   if (Platform.OS === "web") return;
@@ -326,6 +334,75 @@ const getLocation = useCallback(async (): Promise<{ lat: number; lng: number }> 
       setLoading(false);
     }
   }, [getLocation]);
+
+
+  const loadKeyword = useCallback(
+    async (keyword: string) => {
+      setLoading(true);
+      setError(null);
+  
+      try {
+        const { lat, lng } = await getLocation();
+        const radiusMeters = 5000;
+        const limit = 20;
+  
+        const data = await fetchPlaces({
+          lat,
+          lng,
+          radiusMeters,
+          limit,
+          keyword: keyword.trim(),
+        });
+  
+        const items: Place[] = (data.places ?? []).map((p: any) => {
+          const plat = p.lat ?? p.location?.lat;
+          const plng = p.lng ?? p.location?.lng;
+  
+          const distanceM = haversineMeters(lat, lng, plat, plng);
+          const rating = p.rating ?? p.googleRating;
+          const userRatingCount = p.userRatingCount ?? p.googleUserRatingsTotal;
+  
+          const scored = scoreRestaurant({ rating, userRatingCount });
+  
+          return {
+            id: String(p.id ?? p.placeId ?? `${plat}-${plng}-${p.name}`),
+            name: p.name ?? p.displayName ?? "Restaurant",
+            address: p.address ?? p.formattedAddress,
+            lat: plat,
+            lng: plng,
+            rating,
+            userRatingCount,
+            distanceMiles: metersToMiles(distanceM),
+            score: scored.score,
+            verdict: scored.verdict,
+            tags: scored.tags,
+          };
+        });
+  
+        items.sort((a, b) => a.distanceMiles - b.distanceMiles);
+        setPlaces(items);
+      } catch (e: any) {
+        setError(e?.message ?? "Failed to load restaurants");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [getLocation]
+  );
+  
+  useEffect(() => {
+    if (!incomingQ) return;
+  
+    // Optional: reflect in UI (choose what makes sense in your screen)
+    // If you have a search input state, set it here. If not, ignore.
+    // setSearchText(incomingQ);
+  
+    // Don’t treat it as cuisine; run keyword search
+    loadKeyword(incomingQ);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incomingQ, loadKeyword]);
+  
+
 
   // ✅ REQUIREMENT: whenever EatOut is called/entered, reset to Profile default + refresh results
   useFocusEffect(
