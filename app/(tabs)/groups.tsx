@@ -60,6 +60,8 @@ function buildRollups(params: {
     ];
   }
 
+
+
   if (activeContext === "family") {
     const cards: RollupCardModel[] = [];
 
@@ -108,6 +110,57 @@ function buildRollups(params: {
     },
   ];
 }
+
+
+function SectionRow({
+  title,
+  subtitle,
+  onPress,
+}: {
+  title: string;
+  subtitle: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable onPress={onPress} style={sectionRowStyles.card}>
+      <View style={{ flex: 1, paddingRight: 10 }}>
+        <Text style={sectionRowStyles.title}>{title}</Text>
+        <Text style={sectionRowStyles.subtitle}>{subtitle}</Text>
+      </View>
+      <Text style={sectionRowStyles.chev}>›</Text>
+    </Pressable>
+  );
+}
+
+
+const sectionRowStyles = StyleSheet.create({
+  card: {
+    backgroundColor: "white",
+    borderRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 12,
+  },
+  title: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#111827",
+  },
+  subtitle: {
+    marginTop: 2,
+    fontSize: 13,
+    color: "#6B7280",
+  },
+  chev: {
+    fontSize: 22,
+    color: "#9CA3AF",
+  },
+});
+
+
 
 export default function GroupsScreen() {
   const [segment, setSegment] = useState<ContextScope>("individual");
@@ -428,6 +481,14 @@ export default function GroupsScreen() {
           )}
         </View>
       ) : null}
+
+
+<SectionRow
+  title="Usage"
+  subtitle="Monthly family usage"
+  onPress={() => router.push("/groups/usage")}
+/>
+
 
       {/* Rollups */}
       <FlatList
