@@ -32,6 +32,13 @@ type LogItem = {
   photoUri?: string;
 };
 
+type MeResponse = {
+  userId?: string;
+  activeProfile?: string;
+  mode?: "individual" | "family" | "workplace";
+  family?: { members?: Array<{ id: string; name?: string; displayName?: string }> };
+};
+
 const capitalize = (s?: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : "");
 
 function fmtTime(iso?: string) {
@@ -68,6 +75,9 @@ export default function RecentScreen() {
 
   const [items, setItems] = useState<LogItem[]>([]);
   const [family, setFamily] = useState<FamilyMember[]>([]);
+  const [me, setMe] = useState<MeResponse | null>(null);
+  const [meId, setMeId] = useState<string>("u_self");
+
   const [busy, setBusy] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,18 +87,35 @@ export default function RecentScreen() {
   const userDisplayName = useCallback(
     (userId?: string) => {
       if (!userId) return "Me";
+
+      // Prefer /v1/me family member display names (source of truth for order + label)
+      const fromMe =
+        me?.family?.members?.find((m) => String(m.id) === String(userId))?.displayName ||
+        me?.family?.members?.find((m) => String(m.id) === String(userId))?.name;
+
+      if (fromMe) return fromMe;
+
+      // Fallback to local family list (existing behavior)
       return family.find((m) => m.id === userId)?.name ?? userId;
     },
-    [family]
+    [family, me]
   );
+
+  const fetchMe = useCallback(async (): Promise<MeResponse> => {
+    const r = await fetch(`${api}/v1/me`, { method: "GET" });
+    const j = (await r.json().catch(() => null)) as MeResponse | null;
+    if (!r.ok || !j) throw new Error(`Failed to load /v1/me (${r.status})`);
+    return j;
+  }, [api]);
 
   const load = useCallback(async () => {
     try {
       setError(null);
 
-      const [logsResp, fam] = await Promise.all([
+      const [logsResp, fam, meJson] = await Promise.all([
         fetch(`${api}/v1/logs`, { method: "GET" }),
         fetchFamilyMembers(),
+        fetchMe().catch(() => ({} as MeResponse)), // non-fatal fallback
       ]);
 
       const logsJson = await logsResp.json().catch(() => ({}));
@@ -97,20 +124,27 @@ export default function RecentScreen() {
       }
 
       const list = Array.isArray(logsJson?.items) ? (logsJson.items as LogItem[]) : [];
+
+      // Keep original global sort (createdAt desc)
       const sorted = list
         .slice()
         .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
 
       setFamily(fam);
       setItems(sorted);
+
+      setMe(meJson || null);
+      const nextMeId = String(meJson?.userId || "").trim();
+      setMeId(nextMeId || "u_self");
     } catch (e: any) {
       setError(e?.message ?? "Failed to load logs");
       setItems([]);
+      setMe(null);
     } finally {
       setBusy(false);
       setRefreshing(false);
     }
-  }, [api]);
+  }, [api, fetchMe]);
 
   useFocusEffect(
     useCallback(() => {
@@ -134,8 +168,56 @@ export default function RecentScreen() {
     for (const it of items) {
       groups[getDayBucket(it.createdAt)].push(it);
     }
-    return groups;
-  }, [items]);
+
+    const byTimeDesc = (a: LogItem, b: LogItem) =>
+      String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
+
+    // For each day bucket:
+    // Member order EXACTLY matches /v1/me.family.members
+    // And within each member: newest -> oldest
+    const orderBucket = (arr: LogItem[]) => {
+      const memberOrder = (me?.family?.members ?? [])
+        .map((m) => String(m.id))
+        .filter(Boolean);
+
+      // If we don't have a family list (individual mode), just sort newest->oldest overall
+      if (!memberOrder.length) return arr.slice().sort(byTimeDesc);
+
+      // Bucket logs by userId
+      const buckets = new Map<string, LogItem[]>();
+      for (const it of arr) {
+        const uid = String(it.userId || "");
+        if (!buckets.has(uid)) buckets.set(uid, []);
+        buckets.get(uid)!.push(it);
+      }
+
+      // Sort each member bucket newest->oldest
+      for (const list of buckets.values()) list.sort(byTimeDesc);
+
+      // Emit in /v1/me family member order
+      const out: LogItem[] = [];
+      for (const uid of memberOrder) {
+        const list = buckets.get(uid);
+        if (list?.length) out.push(...list);
+        buckets.delete(uid);
+      }
+
+      // Append any remaining userIds (not in /v1/me.family.members)
+      const remainingIds = Array.from(buckets.keys()).sort();
+      for (const uid of remainingIds) {
+        const list = buckets.get(uid);
+        if (list?.length) out.push(...list);
+      }
+
+      return out;
+    };
+
+    return {
+      Today: orderBucket(groups.Today),
+      Yesterday: orderBucket(groups.Yesterday),
+      Earlier: orderBucket(groups.Earlier),
+    };
+  }, [items, me, meId]);
 
   return (
     <ScrollView
@@ -238,70 +320,68 @@ const styles = StyleSheet.create({
   sub: { marginTop: 6, color: "#4A6468", fontWeight: "700", marginBottom: 10 },
 
   card: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 18,
+    backgroundColor: "white",
+    borderRadius: 16,
     padding: 14,
     borderWidth: 1,
-    borderColor: "#E4EFF1",
-    marginTop: 12,
+    borderColor: "#E2EEF0",
+  },
+
+  sectionHeader: {
+    fontWeight: "900",
+    color: "#0B2A2F",
+    marginBottom: 10,
+    letterSpacing: 0.6,
   },
 
   rowCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 18,
+    flexDirection: "row",
+    backgroundColor: "white",
+    borderRadius: 16,
     padding: 12,
     borderWidth: 1,
-    borderColor: "#E4EFF1",
-    marginTop: 10,
-    flexDirection: "row",
+    borderColor: "#E2EEF0",
+    marginBottom: 10,
     gap: 12,
-    alignItems: "center",
   },
 
-  thumbWrap: { width: 76, height: 76, borderRadius: 14, overflow: "hidden" },
-  thumb: { width: "100%", height: "100%", backgroundColor: "#000" },
+  thumbWrap: { width: 64, height: 64, borderRadius: 14, overflow: "hidden" },
+  thumb: { width: 64, height: 64, borderRadius: 14 },
   thumbPlaceholder: { backgroundColor: "#EAF4F5" },
 
   rowTitle: { fontSize: 16, fontWeight: "900", color: "#0B2A2F" },
   rowMeta: { marginTop: 4, color: "#4A6468", fontWeight: "700" },
 
   pillRow: { marginTop: 8, flexDirection: "row" },
-  pill: { borderRadius: 999, paddingVertical: 6, paddingHorizontal: 10, borderWidth: 1 },
-  pillGood: { backgroundColor: "#E7FAF3", borderColor: "#BFECDD" },
-  pillOk: { backgroundColor: "#FFF4DF", borderColor: "#F0D3A1" },
-  pillBad: { backgroundColor: "#FFE8E8", borderColor: "#F1B9B9" },
+  pill: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
   pillText: { fontWeight: "900", color: "#0B2A2F" },
+
+  pillGood: { backgroundColor: "#E8FBF3", borderWidth: 1, borderColor: "#BFEFDC" },
+  pillOk: { backgroundColor: "#FFF4E0", borderWidth: 1, borderColor: "#F1D9A5" },
+  pillBad: { backgroundColor: "#FFE8E8", borderWidth: 1, borderColor: "#F2BABA" },
+
+  error: { fontWeight: "900", color: "#B00020", marginBottom: 6 },
+  muted: { color: "#4A6468", fontWeight: "700" },
+
+  emptyTitle: { fontWeight: "900", color: "#0B2A2F", fontSize: 16, marginBottom: 6 },
 
   primaryBtn: {
     marginTop: 12,
-    backgroundColor: "#0E7C86",
-    paddingVertical: 14,
-    borderRadius: 14,
-    alignItems: "center",
-  },
-  primaryBtnText: { color: "#FFFFFF", fontWeight: "900" },
-
-  secondaryBtn: {
-    marginTop: 12,
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#E4EFF1",
+    backgroundColor: "#0F766E",
     paddingVertical: 12,
     borderRadius: 14,
     alignItems: "center",
   },
-  secondaryBtnText: { color: "#0B2A2F", fontWeight: "900" },
+  primaryBtnText: { color: "white", fontWeight: "900" },
 
-  emptyTitle: { fontSize: 18, fontWeight: "900", color: "#0B2A2F" },
-  muted: { marginTop: 8, color: "#4A6468", fontWeight: "700", lineHeight: 18 },
-
-  error: { fontWeight: "900", color: "#B00020" },
-  sectionHeader: {
-    fontSize: 12,
-    fontWeight: "900",
-    color: "#4A6468",
-    textTransform: "uppercase",
-    letterSpacing: 0.6,
-    marginBottom: 6,
+  secondaryBtn: {
+    marginTop: 12,
+    backgroundColor: "#EAF4F5",
+    paddingVertical: 12,
+    borderRadius: 14,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#D7E9EB",
   },
+  secondaryBtnText: { color: "#0B2A2F", fontWeight: "900" },
 });
