@@ -1,17 +1,45 @@
 import React, { useCallback, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  Pressable,
-  StyleSheet,
-  TextInput,
-  ScrollView,
-} from "react-native";
+import { View, Text, Pressable, StyleSheet, TextInput, ScrollView } from "react-native";
 import { useFocusEffect, router } from "expo-router";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { getAppContext } from "@/src/storage/appContext";
 import { listUsers, upsertUser, UserProfile } from "@/src/storage/users";
 import { listGroups } from "@/src/storage/groups";
+import { Theme } from "@/src/ui/theme";
+
+// ---- Safe fallbacks in case Theme is missing keys ----
+const C = (Theme as any)?.colors ?? {};
+const S = (Theme as any)?.spacing ?? {};
+const R = (Theme as any)?.radius ?? {};
+const T = (Theme as any)?.text ?? {};
+
+const COLORS = {
+  bg: C.bg ?? "#F5F7F8",
+  card: C.card ?? "#FFFFFF",
+  text: C.text ?? "#0F172A",
+  muted: C.muted ?? "rgba(15,23,42,0.55)",
+  border: C.border ?? "rgba(0,0,0,0.08)",
+  teal: C.teal ?? "#0F766E",
+  chipOnBg: C.chipOnBg ?? "rgba(15,118,110,0.12)",
+  btnGhostBg: C.btnGhostBg ?? "rgba(0,0,0,0.06)",
+};
+
+const SPACING = {
+  page: S.page ?? 16,
+  cardPad: S.cardPad ?? 14,
+  gap: S.gap ?? 10,
+};
+
+const RADIUS = {
+  card: R.card ?? 16,
+  input: R.input ?? 12,
+  pill: R.pill ?? 999,
+};
+
+const TEXT = {
+  title: T.title ?? 22,
+};
 
 export default function AssignInsuranceScreen() {
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -22,7 +50,6 @@ export default function AssignInsuranceScreen() {
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
-  // Load: ctx + users + active familyId
   useFocusEffect(
     useCallback(() => {
       let alive = true;
@@ -32,10 +59,8 @@ export default function AssignInsuranceScreen() {
         const us = await listUsers();
         const me = us.find((u) => u.id === ctx.currentUserId) ?? null;
 
-        // Prefer real membership
         let famId = me?.familyId ?? "";
         if (!famId) {
-          // fallback to stored family group id if exists (demo convenience)
           const gs = await listGroups();
           famId = gs.find((g) => g.type === "Family")?.id ?? "";
         }
@@ -44,11 +69,8 @@ export default function AssignInsuranceScreen() {
 
         setUsers(us);
         setActiveFamilyId(famId);
-
-        // Default insuranceId to current user's insuranceId if present
         setInsuranceId(me?.insuranceId ?? "");
 
-        // Default selection = all family members
         const famMembers = famId ? us.filter((u) => u.familyId === famId) : [];
         const nextSel: Record<string, boolean> = {};
         famMembers.forEach((u) => (nextSel[u.id] = true));
@@ -95,18 +117,9 @@ export default function AssignInsuranceScreen() {
     setMsg(null);
 
     const id = insuranceId.trim().toUpperCase();
-    if (!id) {
-      setMsg("Enter an Insurance ID (e.g., INS-A).");
-      return;
-    }
-    if (!activeFamilyId) {
-      setMsg("No family found. Join or create a family first.");
-      return;
-    }
-    if (selectedCount === 0) {
-      setMsg("Select at least one family member.");
-      return;
-    }
+    if (!id) return setMsg("Enter an Insurance ID (e.g., INS-A).");
+    if (!activeFamilyId) return setMsg("No family found. Join or create a family first.");
+    if (selectedCount === 0) return setMsg("Select at least one family member.");
 
     setSaving(true);
     try {
@@ -117,43 +130,20 @@ export default function AssignInsuranceScreen() {
       );
 
       await refreshUsers();
-
-      setMsg(
-        `Applied ${id} to ${selectedCount} member${
-          selectedCount === 1 ? "" : "s"
-        }.`
-      );
-
-      // Prefer going back; Groups screen re-loads on focus.
+      setMsg(`Applied ${id} to ${selectedCount} member${selectedCount === 1 ? "" : "s"}.`);
       router.back();
-
-      // If you prefer a hard jump:
-      // router.replace("/(tabs)/groups");
     } catch (e: any) {
       setMsg(e?.message ?? "Failed to apply insurance.");
     } finally {
       setSaving(false);
     }
-  }, [
-    insuranceId,
-    activeFamilyId,
-    selectedCount,
-    familyMembers,
-    selectedIds,
-    refreshUsers,
-  ]);
+  }, [insuranceId, activeFamilyId, selectedCount, familyMembers, selectedIds, refreshUsers]);
 
   const onClearSelected = useCallback(async () => {
     setMsg(null);
 
-    if (!activeFamilyId) {
-      setMsg("No family found. Join or create a family first.");
-      return;
-    }
-    if (selectedCount === 0) {
-      setMsg("Select at least one family member.");
-      return;
-    }
+    if (!activeFamilyId) return setMsg("No family found. Join or create a family first.");
+    if (selectedCount === 0) return setMsg("Select at least one family member.");
 
     setSaving(true);
     try {
@@ -164,15 +154,8 @@ export default function AssignInsuranceScreen() {
       );
 
       await refreshUsers();
-
-      setMsg(
-        `Cleared insurance for ${selectedCount} member${
-          selectedCount === 1 ? "" : "s"
-        }.`
-      );
-
+      setMsg(`Cleared insurance for ${selectedCount} member${selectedCount === 1 ? "" : "s"}.`);
       router.back();
-      // or: router.replace("/(tabs)/groups");
     } catch (e: any) {
       setMsg(e?.message ?? "Failed to clear insurance.");
     } finally {
@@ -180,133 +163,176 @@ export default function AssignInsuranceScreen() {
     }
   }, [activeFamilyId, selectedCount, familyMembers, selectedIds, refreshUsers]);
 
+  const insets = useSafeAreaInsets();
+
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Assign Insurance</Text>
+    <SafeAreaView style={styles.safe} edges={["top"]}>
+      <ScrollView
+        style={styles.safe}
+        contentContainerStyle={[
+          styles.page,
+          { paddingBottom: SPACING.page + insets.bottom },
+        ]}
+        keyboardShouldPersistTaps="handled"
+      >
+        <Text style={styles.title}>Assign Insurance</Text>
 
-      <View style={styles.card}>
-        <Text style={styles.sub}>
-          Assign an Insurance ID to one or more family members. (Local-only for
-          now.)
-        </Text>
+        <View style={styles.card}>
+          <Text style={styles.sub}>
+            Assign an Insurance ID to one or more family members. (Local-only for now.)
+          </Text>
 
-        <Text style={styles.label}>Insurance ID</Text>
-        <TextInput
-          value={insuranceId}
-          onChangeText={setInsuranceId}
-          placeholder="e.g., INS-A"
-          autoCapitalize="characters"
-          style={styles.input}
-        />
+          <Text style={styles.label}>Insurance ID</Text>
+          <TextInput
+            value={insuranceId}
+            onChangeText={setInsuranceId}
+            placeholder="e.g., INS-A"
+            autoCapitalize="characters"
+            placeholderTextColor={COLORS.muted}
+            style={styles.input}
+          />
 
-        <View style={styles.row}>
-          <Pressable onPress={() => setAll(true)} style={styles.secondaryBtn}>
-            <Text style={styles.secondaryBtnText}>Select all</Text>
-          </Pressable>
-          <Pressable onPress={() => setAll(false)} style={styles.secondaryBtn}>
-            <Text style={styles.secondaryBtnText}>Clear all</Text>
-          </Pressable>
+          <View style={styles.row}>
+            <Pressable onPress={() => setAll(true)} style={styles.ghostBtn}>
+              <Text style={styles.ghostBtnText}>Select all</Text>
+            </Pressable>
+            <Pressable onPress={() => setAll(false)} style={styles.ghostBtn}>
+              <Text style={styles.ghostBtnText}>Clear all</Text>
+            </Pressable>
+          </View>
+
+          <Text style={styles.label}>Family members ({familyMembers.length})</Text>
+
+          <ScrollView
+            style={styles.memberList}
+            contentContainerStyle={{ paddingBottom: 6 }}
+            keyboardShouldPersistTaps="handled"
+          >
+            {familyMembers.length === 0 ? (
+              <Text style={styles.emptyText}>No members found for this family.</Text>
+            ) : (
+              familyMembers.map((m) => {
+                const checked = !!selectedIds[m.id];
+                const name = m.name ?? m.id;
+                const role = m.id === "head" ? "Head" : m.id === "spouse" ? "Spouse" : "Member";
+                const current = m.insuranceId ? `INS: ${m.insuranceId}` : "INS: —";
+
+                return (
+                  <Pressable key={m.id} onPress={() => toggle(m.id)} style={styles.memberRow}>
+                    <View style={[styles.checkbox, checked && styles.checkboxOn]}>
+                      {checked ? <Text style={styles.checkboxTick}>✓</Text> : null}
+                    </View>
+
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.memberName}>
+                        {name} ({role})
+                      </Text>
+                      <Text style={styles.memberMeta}>{current}</Text>
+                    </View>
+                  </Pressable>
+                );
+              })
+            )}
+          </ScrollView>
+
+          {msg ? <Text style={styles.msg}>{msg}</Text> : null}
+
+          <View style={[styles.row, { marginTop: 12 }]}>
+            <Pressable onPress={onApply} style={styles.primaryBtn} disabled={saving}>
+              <Text style={styles.primaryBtnText}>{saving ? "Saving..." : "Apply"}</Text>
+            </Pressable>
+
+            <Pressable onPress={onClearSelected} style={styles.ghostBtn} disabled={saving}>
+              <Text style={styles.ghostBtnText}>Clear selected</Text>
+            </Pressable>
+
+            <Pressable onPress={() => router.back()} style={styles.ghostBtn} disabled={saving}>
+              <Text style={styles.ghostBtnText}>Cancel</Text>
+            </Pressable>
+          </View>
         </View>
-
-        <Text style={styles.label}>Family members ({familyMembers.length})</Text>
-
-        <ScrollView style={{ maxHeight: 260 }} contentContainerStyle={{ paddingBottom: 6 }}>
-          {familyMembers.length === 0 ? (
-            <Text style={{ opacity: 0.65 }}>No members found for this family.</Text>
-          ) : (
-            familyMembers.map((m) => {
-              const checked = !!selectedIds[m.id];
-              const name = m.name ?? m.id;
-              const role =
-                m.id === "head" ? "Head" : m.id === "spouse" ? "Spouse" : "Member";
-              const current = m.insuranceId ? `INS: ${m.insuranceId}` : "INS: —";
-
-              return (
-                <Pressable key={m.id} onPress={() => toggle(m.id)} style={styles.memberRow}>
-                  <View style={[styles.checkbox, checked && styles.checkboxOn]}>
-                    {checked ? <Text style={styles.checkboxTick}>✓</Text> : null}
-                  </View>
-
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.memberName}>
-                      {name} ({role})
-                    </Text>
-                    <Text style={styles.memberMeta}>{current}</Text>
-                  </View>
-                </Pressable>
-              );
-            })
-          )}
-        </ScrollView>
-
-        {msg ? <Text style={styles.msg}>{msg}</Text> : null}
-
-        <View style={[styles.row, { marginTop: 12 }]}>
-          <Pressable onPress={onApply} style={styles.primaryBtn} disabled={saving}>
-            <Text style={styles.primaryBtnText}>{saving ? "Saving..." : "Apply"}</Text>
-          </Pressable>
-
-          <Pressable onPress={onClearSelected} style={styles.ghostBtn} disabled={saving}>
-            <Text style={styles.ghostBtnText}>Clear selected</Text>
-          </Pressable>
-
-          <Pressable onPress={() => router.back()} style={styles.ghostBtn} disabled={saving}>
-            <Text style={styles.ghostBtnText}>Cancel</Text>
-          </Pressable>
-        </View>
-      </View>
-    </View>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16, backgroundColor: "#f6f7fb" },
-  title: { fontSize: 22, fontWeight: "900", marginBottom: 12 },
-  card: { padding: 14, borderRadius: 14, backgroundColor: "rgba(0,0,0,0.04)" },
-  sub: { opacity: 0.7 },
+  safe: {
+    flex: 1,
+    backgroundColor: COLORS.bg,
+  },
 
-  label: { marginTop: 12, fontWeight: "900", opacity: 0.8 },
+  page: {
+    paddingHorizontal: SPACING.page,
+    paddingTop: 12, // aligns with other tabs
+  },
+
+  title: {
+    fontSize: TEXT.title,
+    fontWeight: "900",
+    marginBottom: 12,
+    color: COLORS.text,
+  },
+
+  card: {
+    padding: SPACING.cardPad,
+    borderRadius: RADIUS.card,
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+
+  sub: {
+    opacity: 0.75,
+    color: COLORS.muted,
+  },
+
+  label: {
+    marginTop: 12,
+    fontWeight: "900",
+    opacity: 0.85,
+    color: COLORS.text,
+  },
+
   input: {
     marginTop: 8,
     paddingVertical: 10,
     paddingHorizontal: 12,
-    borderRadius: 12,
-    backgroundColor: "white",
+    borderRadius: RADIUS.input,
+    backgroundColor: COLORS.card,
     borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.10)",
+    borderColor: COLORS.border,
+    color: COLORS.text,
   },
 
   row: {
     marginTop: 10,
     flexDirection: "row",
-    gap: 12,
+    gap: SPACING.gap,
     alignItems: "center",
     flexWrap: "wrap",
   },
 
   primaryBtn: {
-    backgroundColor: "#0f766e",
+    backgroundColor: COLORS.teal,
     paddingVertical: 10,
     paddingHorizontal: 14,
-    borderRadius: 12,
+    borderRadius: RADIUS.input,
   },
   primaryBtnText: { color: "white", fontWeight: "900" },
 
-  secondaryBtn: {
-    backgroundColor: "rgba(0,0,0,0.06)",
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-  },
-  secondaryBtnText: { fontWeight: "900", color: "rgba(0,0,0,0.75)" },
-
   ghostBtn: {
-    backgroundColor: "rgba(0,0,0,0.06)",
+    backgroundColor: COLORS.btnGhostBg,
     paddingVertical: 10,
     paddingHorizontal: 14,
-    borderRadius: 12,
+    borderRadius: RADIUS.input,
   },
   ghostBtnText: { fontWeight: "900", color: "rgba(0,0,0,0.75)" },
+
+  memberList: {
+    marginTop: 6,
+    maxHeight: 280,
+  },
 
   memberRow: {
     marginTop: 8,
@@ -314,11 +340,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 12,
     padding: 12,
-    borderRadius: 12,
-    backgroundColor: "white",
+    borderRadius: RADIUS.input,
+    backgroundColor: COLORS.card,
     borderWidth: 1,
     borderColor: "rgba(0,0,0,0.08)",
   },
+
   checkbox: {
     width: 26,
     height: 26,
@@ -327,16 +354,18 @@ const styles = StyleSheet.create({
     borderColor: "rgba(0,0,0,0.25)",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "white",
+    backgroundColor: COLORS.card,
   },
   checkboxOn: {
     borderColor: "rgba(15,118,110,0.60)",
-    backgroundColor: "rgba(15,118,110,0.12)",
+    backgroundColor: COLORS.chipOnBg,
   },
-  checkboxTick: { fontWeight: "900", color: "#0f766e" },
+  checkboxTick: { fontWeight: "900", color: COLORS.teal },
 
-  memberName: { fontWeight: "900" },
-  memberMeta: { marginTop: 3, opacity: 0.7, fontSize: 12 },
+  memberName: { fontWeight: "900", color: COLORS.text },
+  memberMeta: { marginTop: 3, opacity: 0.75, fontSize: 12, color: COLORS.muted },
 
-  msg: { marginTop: 10, fontWeight: "800", opacity: 0.8 },
+  msg: { marginTop: 10, fontWeight: "800", opacity: 0.85, color: COLORS.text },
+
+  emptyText: { opacity: 0.65, color: COLORS.muted, marginTop: 8 },
 });

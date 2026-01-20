@@ -1,13 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { Stack, usePathname, useRouter } from "expo-router";
-import { Pressable, Text } from "react-native";
-import { clearAdminSessionToken, getAdminSessionToken } from "../../lib/admin/session";
-import LogoutButton from "../../components/LogoutButton";
-import { HEADER_STYLE } from "../../src/ui/headerStyle";
-import { getAppContext, setAppContext, clearAppContext } from "@/src/storage/appContext";
-import { View } from "react-native";
 
-
+import LogoutButton from "@/components/LogoutButton";
+import { clearAdminSessionToken, getAdminSessionToken } from "@/lib/admin/session";
+import { headerStyles } from "@/src/ui/headerStyle";
 
 export default function AdminLayout() {
   const router = useRouter();
@@ -27,11 +23,8 @@ export default function AdminLayout() {
       setAuthed(ok);
       setChecked(true);
 
-      // Allow login route even when not authed
       const onLoginRoute = pathname === "/admin/login";
-      if (!ok && !onLoginRoute) {
-        router.replace("/admin/login");
-      }
+      if (!ok && !onLoginRoute) router.replace("/admin/login");
     })();
 
     return () => {
@@ -39,36 +32,24 @@ export default function AdminLayout() {
     };
   }, [router, pathname]);
 
-  // While checking storage, render a minimal stack (prevents flicker/crashes)
-  if (!checked) {
-    return <Stack screenOptions={{ headerTitle: "Admin" }} />;
-  }
+  // While checking storage, render a minimal stack
+  if (!checked) return <Stack screenOptions={{ ...headerStyles.base, headerTitle: "Admin" }} />;
 
   return (
     <Stack
-    screenOptions={{
-      ...HEADER_STYLE,
-      headerTitle: "Admin",
-      headerRight: () =>
-        authed ? (
-          <View style={{ flexDirection: "row", alignItems: "center" }}>
-            <LogoutButton
-              variant="header"
-              label="Logout"
-              onPress={async () => {
-                await clearAdminSessionToken();
-                await clearAppContext();
-                router.replace(`/context-gate?force=1&t=${Date.now()}`);
-              }}
-            />
-          </View>
-        ) : null,
-    }}
+      screenOptions={{
+        ...headerStyles.base,
+        headerRight: () => (
+          <LogoutButton
+            onPress={async () => {
+              await clearAdminSessionToken();
+              router.replace("/context-gate");
+            }}
+          />
+        ),
+      }}
     >
-      <Stack.Screen
-        name="login"
-        options={{ title: "Login", headerRight: () => null }}
-      />
+      <Stack.Screen name="login" options={{ title: "Login", headerRight: () => null }} />
       <Stack.Screen name="index" options={{ title: "Overview" }} />
       <Stack.Screen name="users" options={{ title: "Users" }} />
       <Stack.Screen name="top-spenders" options={{ title: "Top Spenders" }} />

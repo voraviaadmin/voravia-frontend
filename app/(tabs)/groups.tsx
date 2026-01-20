@@ -1,30 +1,85 @@
 import React, { useCallback, useMemo, useState } from "react";
-import { View, Text, Pressable, StyleSheet, FlatList } from "react-native";
+import { View, Text, Pressable, StyleSheet, FlatList, ActivityIndicator } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 
 import { listGroups, Group } from "@/src/storage/groups";
-import { RollupCard, RollupCardModel } from "@/src/ui/RollupCard";
-
 import { getAppContext, setAppContext } from "@/src/storage/appContext";
 import { listUsers, seedDemoHousehold, UserProfile } from "@/src/storage/users";
 import { patchMe } from "@/src/hooks/useMe";
-
-
+import { Theme } from "@/src/ui/theme";
 
 import type { ContextScope } from "@/src/context/contextRules";
-import {
-  clampContext,
-  getContextEligibility,
-  getAvailableContexts,
-} from "@/src/context/contextRules";
+import { clampContext, getContextEligibility, getAvailableContexts } from "@/src/context/contextRules";
 
-function countBy(
-  users: UserProfile[],
-  key: "familyId" | "insuranceId" | "corporateId",
-  value?: string
-) {
-  if (!value) return 0;
-  return users.filter((u) => u[key] === value).length;
+import { getApiBaseUrl } from "../../lib/me";
+
+type ScoreMode = "avg14d" | "today";
+
+type DaySummary = { dailyScore?: number };
+type LogsResp = { items?: Array<{ createdAt?: string; day?: string; score?: number }> };
+
+function clampScore(n: number) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return 0;
+  return Math.max(0, Math.min(100, Math.round(x)));
+}
+
+function isoDay(d: Date) {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function subtractDays(d: Date, days: number) {
+  const x = new Date(d);
+  x.setDate(x.getDate() - days);
+  return x;
+}
+
+/**
+ * Avg daily score from logs:
+ * - group scored meals by day
+ * - avg meals per day
+ * - avg across last N days that have any scored meals
+ */
+function computeAvgScoreFromLogs(items: Array<{ createdAt?: string; day?: string; score?: number }>, days = 14): number | null {
+  const today = new Date();
+  const start = subtractDays(today, days - 1);
+
+  const dayToScores = new Map<string, number[]>();
+
+  for (const it of items) {
+    const createdAt = it.createdAt ? new Date(it.createdAt) : null;
+    if (!createdAt || Number.isNaN(createdAt.getTime())) continue;
+    if (createdAt < start) continue;
+
+    const s = Number(it.score);
+    if (!Number.isFinite(s)) continue;
+
+    const key = it.day ? String(it.day) : isoDay(createdAt);
+    const arr = dayToScores.get(key) || [];
+    arr.push(s);
+    dayToScores.set(key, arr);
+  }
+
+  const perDay: number[] = [];
+  for (const arr of dayToScores.values()) {
+    if (!arr.length) continue;
+    const sum = arr.reduce((a, b) => a + b, 0);
+    perDay.push(sum / arr.length);
+  }
+
+  if (!perDay.length) return null;
+  const avg = perDay.reduce((a, b) => a + b, 0) / perDay.length;
+  return clampScore(avg);
+}
+
+function mean(nums: Array<number | null | undefined>) {
+  const vals = nums.filter((n): n is number => typeof n === "number" && Number.isFinite(n));
+  if (!vals.length) return 0;
+  const s = vals.reduce((a, b) => a + b, 0);
+  return clampScore(s / vals.length);
 }
 
 function scopeLabel(s: ContextScope) {
@@ -33,84 +88,22 @@ function scopeLabel(s: ContextScope) {
   return "Workplace";
 }
 
-/**
- * Step B helper (kept): Rollups determined only by activeContext.
- */
-function buildRollups(params: {
-  activeContext: ContextScope;
-  me: UserProfile;
-  users: UserProfile[];
-  familyGroup?: Group | null;
-  activeFamilyId?: string;
-}): RollupCardModel[] {
-  const { activeContext, me, users, familyGroup, activeFamilyId } = params;
-
-  // Placeholder scores (until backend)
-  const YOU_SCORE = 82;
-  const FAMILY_SCORE = 82;
-
-  if (activeContext === "individual") {
-    return [
-      {
-        title: "You",
-        subtitle: "Personal health score · current streak",
-        score: YOU_SCORE,
-        meta: "Improving",
-      },
-    ];
-  }
-
-
-
-  if (activeContext === "family") {
-    const cards: RollupCardModel[] = [];
-
-    if (activeFamilyId) {
-      const familyMembersCount = countBy(users, "familyId", activeFamilyId);
-      cards.push({
-        title: familyGroup?.name ?? "Family",
-        subtitle: `${familyMembersCount || 1} members · 5-day streak`,
-        score: FAMILY_SCORE,
-        meta: "Improving",
-      });
-    }
-
-    if (me.insuranceId) {
-      const myInsuranceId = me.insuranceId;
-      const insuredMembers = users.filter((u) => u.insuranceId === myInsuranceId).length;
-      const INS_SCORE = myInsuranceId === "INS-B" ? 76 : 79;
-
-      cards.push({
-        title: "Insurance",
-        subtitle: `${myInsuranceId} · ${insuredMembers || 1} insured member${
-          (insuredMembers || 1) === 1 ? "" : "s"
-        }`,
-        score: INS_SCORE,
-        meta: "Improving",
-      });
-    }
-
-    return cards;
-  }
-
-  // Workplace
-  const corporateId = me.corporateId;
-  if (!corporateId) return [];
-
-  const employees = countBy(users, "corporateId", corporateId);
-  const CORP_SCORE = corporateId === "CORP-Y" ? 73 : 75;
-
-  return [
-    {
-      title: corporateId === "CORP-Y" ? "Other Health Group" : "Voravia Health Group",
-      subtitle: `${employees || 1} employees`,
-      score: CORP_SCORE,
-      meta: "Aggregate only",
-      footnote: "Data: N-1 aggregate",
-    },
-  ];
+function countBy(users: UserProfile[], key: "familyId" | "insuranceId" | "corporateId", value?: string) {
+  if (!value) return 0;
+  return users.filter((u) => u[key] === value).length;
 }
 
+function localIdToBackendId(id: string) {
+  return id === "head"
+    ? "u_head"
+    : id === "spouse"
+    ? "u_spouse"
+    : id === "child1"
+    ? "u_child1"
+    : id === "child2"
+    ? "u_child2"
+    : "u_head";
+}
 
 function SectionRow({
   title,
@@ -132,7 +125,6 @@ function SectionRow({
   );
 }
 
-
 const sectionRowStyles = StyleSheet.create({
   card: {
     backgroundColor: "white",
@@ -144,23 +136,74 @@ const sectionRowStyles = StyleSheet.create({
     justifyContent: "space-between",
     marginTop: 12,
   },
-  title: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: "#111827",
-  },
-  subtitle: {
-    marginTop: 2,
-    fontSize: 13,
-    color: "#6B7280",
-  },
-  chev: {
-    fontSize: 22,
-    color: "#9CA3AF",
-  },
+  title: { fontSize: 16, fontWeight: "800", color: "#111827" },
+  subtitle: { marginTop: 2, fontSize: 13, color: "#6B7280" },
+  chev: { fontSize: 22, color: "#9CA3AF" },
 });
 
+/**
+ * Same-size card as your existing rollups,
+ * keeps score on right + label under it,
+ * tap score area toggles Today <-> Avg (14d)
+ */
+function ScoreCard({
+  title,
+  subtitle,
+  meta,
+  score,
+  mode,
+  onToggle,
+  loading,
+}: {
+  title: string;
+  subtitle: string;
+  meta?: string;
+  score: number;
+  mode: ScoreMode;
+  onToggle: () => void;
+  loading?: boolean;
+}) {
+  return (
+    <View style={scoreCardStyles.card}>
+      <View style={{ flex: 1, paddingRight: 12 }}>
+        <Text style={scoreCardStyles.title}>{title}</Text>
+        <Text style={scoreCardStyles.subtitle}>{subtitle}</Text>
+        {!!meta && <Text style={scoreCardStyles.meta}>{meta}</Text>}
+      </View>
 
+      <Pressable onPress={onToggle} style={scoreCardStyles.scoreBox}>
+        {loading ? (
+          <ActivityIndicator />
+        ) : (
+          <>
+            <Text style={scoreCardStyles.score}>{score}</Text>
+            <Text style={scoreCardStyles.scoreLabel}>{mode === "avg14d" ? "Avg (14d)" : "Today"}</Text>
+          </>
+        )}
+      </Pressable>
+    </View>
+  );
+}
+
+const scoreCardStyles = StyleSheet.create({
+  card: {
+    backgroundColor: "white",
+    borderRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 12,
+  },
+  title: { fontSize: 18, fontWeight: "900", color: "#111827" },
+  subtitle: { marginTop: 4, fontSize: 13, color: "#6B7280" },
+  meta: { marginTop: 8, fontSize: 14, fontWeight: "900", color: "#0f766e" },
+
+  scoreBox: { minWidth: 84, alignItems: "flex-end", justifyContent: "center" },
+  score: { fontSize: 44, fontWeight: "900", color: "#0f766e", lineHeight: 48 },
+  scoreLabel: { marginTop: 2, fontSize: 12, fontWeight: "800", color: "rgba(0,0,0,0.55)" },
+});
 
 export default function GroupsScreen() {
   const [segment, setSegment] = useState<ContextScope>("individual");
@@ -169,12 +212,19 @@ export default function GroupsScreen() {
   const [currentUserId, setCurrentUserId] = useState<string>("head");
   const [membersExpanded, setMembersExpanded] = useState(true);
 
-  /**
-   * ✅ Step C: downgrade safety on screen focus
-   * - reload ctx/users/groups
-   * - recompute eligibility
-   * - clamp invalid segment -> persist + update state
-   */
+  // Toggle per card (keeps card size unchanged; only value/label switches)
+  const [modeByCard, setModeByCard] = useState<Record<string, ScoreMode>>({
+    you: "avg14d",
+    family: "avg14d",
+    insurance: "avg14d",
+    workplace: "avg14d",
+  });
+
+  // Score caches keyed by backend member id
+  const [todayByBackendId, setTodayByBackendId] = useState<Record<string, number>>({});
+  const [avg14dByBackendId, setAvg14dByBackendId] = useState<Record<string, number>>({});
+  const [loadingScores, setLoadingScores] = useState(false);
+
   useFocusEffect(
     useCallback(() => {
       let alive = true;
@@ -193,12 +243,10 @@ export default function GroupsScreen() {
         const desired = (ctx.segment ?? "individual") as ContextScope;
         const clamped = clampContext(desired, resolvedMe, { hasFamilyGroup });
 
-        // Persist clamp if needed
         if (clamped !== desired) {
           await setAppContext({ segment: clamped, currentUserId: resolvedUserId });
         }
 
-        // Update UI state
         setSavedGroups(gs);
         setUsers(us);
         setCurrentUserId(resolvedUserId);
@@ -211,22 +259,11 @@ export default function GroupsScreen() {
     }, [])
   );
 
-  const me = useMemo(
-    () => users.find((u) => u.id === currentUserId) ?? null,
-    [users, currentUserId]
-  );
+  const me = useMemo(() => users.find((u) => u.id === currentUserId) ?? null, [users, currentUserId]);
 
-  const familyGroups = useMemo(
-    () => savedGroups.filter((g) => g.type === "Family"),
-    [savedGroups]
-  );
-
+  const familyGroups = useMemo(() => savedGroups.filter((g) => g.type === "Family"), [savedGroups]);
   const familyGroup = useMemo(() => familyGroups[0] ?? null, [familyGroups]);
-
-  const hasFamilyGroup = useMemo(
-    () => savedGroups.some((g) => g.type === "Family"),
-    [savedGroups]
-  );
+  const hasFamilyGroup = useMemo(() => savedGroups.some((g) => g.type === "Family"), [savedGroups]);
 
   const activeFamilyId = useMemo(() => {
     if (me?.familyId) return me.familyId;
@@ -240,26 +277,13 @@ export default function GroupsScreen() {
       .sort((a, b) => (a.id === "head" ? -1 : b.id === "head" ? 1 : 0));
   }, [users, activeFamilyId]);
 
-  /**
-   * Step A: eligible segments list (kept)
-   */
-  const eligibility = useMemo(() => {
-    return getContextEligibility(me, { hasFamilyGroup });
-  }, [me, hasFamilyGroup]);
+  const eligibility = useMemo(() => getContextEligibility(me, { hasFamilyGroup }), [me, hasFamilyGroup]);
+  const SEGMENTS = useMemo<ContextScope[]>(() => getAvailableContexts(eligibility), [eligibility]);
 
-  const SEGMENTS = useMemo<ContextScope[]>(() => {
-    return getAvailableContexts(eligibility);
-  }, [eligibility]);
-
-  /**
-   * ✅ Step C: if eligibility changes while you're on this screen (simulate user / ids changed)
-   * clamp the current segment immediately.
-   */
   useMemo(() => {
     if (!me) return;
     const clamped = clampContext(segment, me, { hasFamilyGroup });
     if (clamped !== segment) {
-      // Fire and forget: state sync + persistence
       setSegment(clamped);
       setAppContext({ segment: clamped, currentUserId });
     }
@@ -270,59 +294,28 @@ export default function GroupsScreen() {
     async (next: ContextScope) => {
       setSegment(next);
       await setAppContext({ segment: next, currentUserId });
-  
-      // backend truth (best-effort, don’t break UI if it fails)
       patchMe({ mode: next as any }).catch(() => {});
     },
     [currentUserId]
   );
 
-  /**
-   * ✅ Step C: when simulating a new user, clamp segment based on THAT user
-   */
   const onChangeUser = useCallback(
     async (nextUserId: string) => {
       const nextMe = users.find((u) => u.id === nextUserId) ?? null;
       const clamped = clampContext(segment, nextMe, { hasFamilyGroup });
-  
+
       setCurrentUserId(nextUserId);
       setSegment(clamped);
-  
+
       await setAppContext({ segment: clamped, currentUserId: nextUserId });
-  
-      // backend truth: active member (map local ids -> backend ids)
-      const backendMemberId =
-        nextUserId === "head"
-          ? "u_head"
-          : nextUserId === "spouse"
-          ? "u_spouse"
-          : nextUserId === "child1"
-          ? "u_child1"
-          : nextUserId === "child2"
-          ? "u_child2"
-          : "u_head";
-  
+
+      const backendMemberId = localIdToBackendId(nextUserId);
       patchMe({ mode: "family", family: { activeMemberId: backendMemberId } }).catch(() => {});
     },
     [users, segment, hasFamilyGroup]
   );
-  
 
   const showCreateFamilyCTA = segment === "family" && familyGroups.length === 0;
-
-  /**
-   * Step B: rollups consume activeContext only (kept)
-   */
-  const rollups = useMemo<RollupCardModel[]>(() => {
-    if (!me) return [];
-    return buildRollups({
-      activeContext: segment,
-      me,
-      users,
-      familyGroup,
-      activeFamilyId,
-    });
-  }, [segment, me, users, familyGroup, activeFamilyId]);
 
   const devSeed = useCallback(async () => {
     const famId = familyGroup?.id ?? "FAM-1";
@@ -332,51 +325,228 @@ export default function GroupsScreen() {
     await onChangeUser("head");
   }, [familyGroup, onChangeUser]);
 
+  // ---- Score loading (Today + Avg14d) ----
+  const loadScores = useCallback(async () => {
+    if (!me) return;
+
+    const api = getApiBaseUrl();
+    const backendMe = localIdToBackendId(me.id);
+
+    // Individual needs selected member
+    const individualIds = [backendMe];
+
+    // Family needs all family members
+    const familyIds = familyMembers.map((m) => localIdToBackendId(m.id));
+
+    // Insurance needs members matching selected/logged-in user's insurance
+    const myInsuranceId = me.insuranceId;
+    const insuranceIds = familyMembers
+      .filter((m) => !!myInsuranceId && m.insuranceId === myInsuranceId)
+      .map((m) => localIdToBackendId(m.id));
+
+    // Only fetch for ids we don't already have cached (keep it low risk)
+    const want = Array.from(new Set([...individualIds, ...familyIds, ...insuranceIds])).filter(Boolean);
+
+    if (!want.length) return;
+
+    setLoadingScores(true);
+
+    try {
+      // Fetch Today + Logs in parallel per member
+      const results = await Promise.all(
+        want.map(async (uid) => {
+          const [dayR, logsR] = await Promise.all([
+            fetch(`${api}/v1/day-summary?userId=${encodeURIComponent(uid)}`).catch(() => null),
+            fetch(`${api}/v1/logs?userId=${encodeURIComponent(uid)}`).catch(() => null),
+          ]);
+
+          let today: number | null = null;
+          let avg14: number | null = null;
+
+          try {
+            if (dayR && (dayR as any).ok) {
+              const j = (await (dayR as any).json().catch(() => ({}))) as DaySummary;
+              today = clampScore(Number(j?.dailyScore ?? 0));
+            }
+          } catch {}
+
+          try {
+            if (logsR && (logsR as any).ok) {
+              const j = (await (logsR as any).json().catch(() => ({}))) as LogsResp;
+              const items = Array.isArray(j?.items) ? j.items : [];
+              const avg = computeAvgScoreFromLogs(items, 14);
+              avg14 = avg === null ? null : avg;
+            }
+          } catch {}
+
+          return { uid, today, avg14 };
+        })
+      );
+
+      setTodayByBackendId((prev) => {
+        const next = { ...prev };
+        for (const r of results) {
+          if (typeof r.today === "number") next[r.uid] = r.today;
+        }
+        return next;
+      });
+
+      setAvg14dByBackendId((prev) => {
+        const next = { ...prev };
+        for (const r of results) {
+          if (typeof r.avg14 === "number") next[r.uid] = r.avg14;
+        }
+        return next;
+      });
+    } finally {
+      setLoadingScores(false);
+    }
+  }, [me, familyMembers]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadScores();
+    }, [loadScores])
+  );
+
+  // ---- Derived card scores ----
+  const backendMeId = useMemo(() => (me ? localIdToBackendId(me.id) : "u_head"), [me]);
+
+  const familyBackendIds = useMemo(() => familyMembers.map((m) => localIdToBackendId(m.id)), [familyMembers]);
+  const insuranceBackendIds = useMemo(() => {
+    const myInsuranceId = me?.insuranceId;
+    if (!myInsuranceId) return [];
+    return familyMembers.filter((m) => m.insuranceId === myInsuranceId).map((m) => localIdToBackendId(m.id));
+  }, [me?.insuranceId, familyMembers]);
+
+  const youScore = useMemo(() => {
+    const mode = modeByCard.you ?? "avg14d";
+    return mode === "today"
+      ? todayByBackendId[backendMeId] ?? 0
+      : avg14dByBackendId[backendMeId] ?? todayByBackendId[backendMeId] ?? 0;
+  }, [modeByCard.you, backendMeId, todayByBackendId, avg14dByBackendId]);
+
+  const familyScore = useMemo(() => {
+    const mode = modeByCard.family ?? "avg14d";
+    const vals = (mode === "today" ? familyBackendIds.map((id) => todayByBackendId[id]) : familyBackendIds.map((id) => avg14dByBackendId[id] ?? todayByBackendId[id]));
+    return mean(vals);
+  }, [modeByCard.family, familyBackendIds, todayByBackendId, avg14dByBackendId]);
+
+  const insuranceScore = useMemo(() => {
+    const mode = modeByCard.insurance ?? "avg14d";
+    const vals = (mode === "today"
+      ? insuranceBackendIds.map((id) => todayByBackendId[id])
+      : insuranceBackendIds.map((id) => avg14dByBackendId[id] ?? todayByBackendId[id]));
+    return mean(vals);
+  }, [modeByCard.insurance, insuranceBackendIds, todayByBackendId, avg14dByBackendId]);
+
+  const toggle = useCallback((key: "you" | "family" | "insurance" | "workplace") => {
+    setModeByCard((prev) => {
+      const cur = prev[key] ?? "avg14d";
+      const next: ScoreMode = cur === "avg14d" ? "today" : "avg14d";
+      return { ...prev, [key]: next };
+    });
+  }, []);
+
+  // ---- Render cards (same size) ----
+  const cards = useMemo(() => {
+    if (!me) return [];
+
+    if (segment === "individual") {
+      return [
+        {
+          key: "you" as const,
+          title: "You",
+          subtitle: "Personal health score · current streak",
+          meta: "Improving",
+          score: youScore,
+          mode: modeByCard.you ?? "avg14d",
+        },
+      ];
+    }
+
+    if (segment === "family") {
+      const out: Array<any> = [];
+
+      if (activeFamilyId) {
+        const count = countBy(users, "familyId", activeFamilyId);
+        out.push({
+          key: "family" as const,
+          title: familyGroup?.name ?? "Family",
+          subtitle: `${count || 1} members · 5-day streak`,
+          meta: "Improving",
+          score: familyScore,
+          mode: modeByCard.family ?? "avg14d",
+        });
+      }
+
+      if (me.insuranceId) {
+        const insuredCount = familyMembers.filter((u) => u.insuranceId === me.insuranceId).length;
+        out.push({
+          key: "insurance" as const,
+          title: "Insurance",
+          subtitle: `${me.insuranceId} · ${insuredCount || 0} insured member${(insuredCount || 0) === 1 ? "" : "s"}`,
+          meta: "Improving",
+          score: insuranceScore,
+          mode: modeByCard.insurance ?? "avg14d",
+        });
+      }
+
+      return out;
+    }
+
+    // Workplace (keep as-is / placeholder, but still toggle-able if you want)
+    const corporateId = me.corporateId;
+    if (!corporateId) return [];
+
+    const employees = countBy(users, "corporateId", corporateId);
+    const CORP_SCORE = corporateId === "CORP-Y" ? 73 : 75;
+
+    return [
+      {
+        key: "workplace" as const,
+        title: corporateId === "CORP-Y" ? "Other Health Group" : "Voravia Health Group",
+        subtitle: `${employees || 1} employees`,
+        meta: "Aggregate only",
+        score: CORP_SCORE,
+        mode: modeByCard.workplace ?? "avg14d",
+      },
+    ];
+  }, [
+    me,
+    segment,
+    activeFamilyId,
+    users,
+    familyGroup?.name,
+    familyMembers,
+    familyScore,
+    insuranceScore,
+    youScore,
+    modeByCard,
+  ]);
+
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: Theme.colors.bg }]}>
       <Text style={styles.title}>Health Groups</Text>
 
-      {/* Segmented Control (eligible contexts only) */}
       <View style={styles.segmentRow}>
         {SEGMENTS.map((s) => (
-          <Pressable
-            key={s}
-            onPress={() => onChangeSegment(s)}
-            style={[styles.segment, segment === s && styles.segmentActive]}
-          >
-            <Text style={[styles.segmentText, segment === s && styles.segmentTextActive]}>
-              {scopeLabel(s)}
-            </Text>
+          <Pressable key={s} onPress={() => onChangeSegment(s)} style={[styles.segment, segment === s && styles.segmentActive]}>
+            <Text style={[styles.segmentText, segment === s && styles.segmentTextActive]}>{scopeLabel(s)}</Text>
           </Pressable>
         ))}
       </View>
 
-      {/* Dev simulate (hidden in workplace) */}
       {__DEV__ && segment !== "workplace" ? (
         <View style={styles.devRow}>
           <Text style={styles.devLabel}>Simulate:</Text>
 
-          <Pressable
-            onPress={() => onChangeUser("head")}
-            style={[styles.devChip, currentUserId === "head" && styles.devChipActive]}
-          >
-            <Text style={[styles.devChipText, currentUserId === "head" && styles.devChipTextActive]}>
-              Head
-            </Text>
+          <Pressable onPress={() => onChangeUser("head")} style={[styles.devChip, currentUserId === "head" && styles.devChipActive]}>
+            <Text style={[styles.devChipText, currentUserId === "head" && styles.devChipTextActive]}>Head</Text>
           </Pressable>
 
-          <Pressable
-            onPress={() => onChangeUser("spouse")}
-            style={[styles.devChip, currentUserId === "spouse" && styles.devChipActive]}
-          >
-            <Text
-              style={[
-                styles.devChipText,
-                currentUserId === "spouse" && styles.devChipTextActive,
-              ]}
-            >
-              Spouse
-            </Text>
+          <Pressable onPress={() => onChangeUser("spouse")} style={[styles.devChip, currentUserId === "spouse" && styles.devChipActive]}>
+            <Text style={[styles.devChipText, currentUserId === "spouse" && styles.devChipTextActive]}>Spouse</Text>
           </Pressable>
 
           {users.length === 0 ? (
@@ -387,7 +557,6 @@ export default function GroupsScreen() {
         </View>
       ) : null}
 
-      {/* Family empty state */}
       {showCreateFamilyCTA ? (
         <View style={styles.emptyBox}>
           <Text style={styles.emptyTitle}>No family group yet</Text>
@@ -399,7 +568,6 @@ export default function GroupsScreen() {
         </View>
       ) : null}
 
-      {/* Family actions (family only) */}
       {segment === "family" && familyGroups.length > 0 ? (
         <View style={{ marginTop: 10, flexDirection: "row", gap: 12 }}>
           <Pressable onPress={() => router.push("/groups/invite-family")} style={styles.secondaryBtn}>
@@ -412,13 +580,9 @@ export default function GroupsScreen() {
         </View>
       ) : null}
 
-      {/* Members (family only) */}
       {segment === "family" && activeFamilyId ? (
         <View style={styles.membersBox}>
-          <Pressable
-            onPress={() => setMembersExpanded((v) => !v)}
-            style={styles.membersHeaderPressable}
-          >
+          <Pressable onPress={() => setMembersExpanded((v) => !v)} style={styles.membersHeaderPressable}>
             <View style={styles.membersTitleRow}>
               <Text style={styles.membersTitle}>Members</Text>
               <Text style={styles.chev}>{membersExpanded ? "▾" : "▸"}</Text>
@@ -482,35 +646,23 @@ export default function GroupsScreen() {
         </View>
       ) : null}
 
+      <SectionRow title="Usage" subtitle="Monthly family usage" onPress={() => router.push("/groups/usage")} />
 
-<SectionRow
-  title="Usage"
-  subtitle="Monthly family usage"
-  onPress={() => router.push("/groups/usage")}
-/>
-
-
-      {/* Rollups */}
       <FlatList
-        data={rollups}
-        keyExtractor={(item, i) => `${item.title}-${i}`}
+        data={cards}
+        keyExtractor={(item) => item.key}
         contentContainerStyle={{ paddingTop: 12, paddingBottom: 16 }}
-        renderItem={({ item }) => <RollupCard item={item} />}
-        /* ListFooterComponent={
-          <View style={{ marginTop: 14, paddingBottom: 8 }}>
-            <Pressable
-              onPress={() =>
-                router.push({
-                  pathname: "/context-gate",
-                  params: { force: "1" },
-                })
-              }
-              style={styles.changeContextBtn}
-            >
-              <Text style={styles.changeContextBtnText}>Change context</Text>
-            </Pressable>
-          </View>
-        }*/
+        renderItem={({ item }) => (
+          <ScoreCard
+            title={item.title}
+            subtitle={item.subtitle}
+            meta={item.meta}
+            score={item.score}
+            mode={item.mode}
+            loading={loadingScores && (item.key === "you" || item.key === "family" || item.key === "insurance")}
+            onToggle={() => toggle(item.key)}
+          />
+        )}
       />
     </View>
   );
@@ -562,11 +714,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(15,118,110,0.12)",
     borderColor: "rgba(15,118,110,0.45)",
   },
-  secondaryBtnText: {
-    fontWeight: "900",
-    fontSize: 13,
-    color: "#0f766e",
-  },
+  secondaryBtnText: { fontWeight: "900", fontSize: 13, color: "#0f766e" },
 
   devRow: {
     marginTop: 10,
@@ -634,17 +782,4 @@ const styles = StyleSheet.create({
     borderColor: "rgba(15,118,110,0.30)",
   },
   badgeText: { fontWeight: "900", fontSize: 12 },
-
-  changeContextBtn: {
-    marginTop: 10,
-    paddingVertical: 14,
-    borderRadius: 14,
-    alignItems: "center",
-    backgroundColor: "#0f766e",
-  },
-  changeContextBtnText: {
-    color: "white",
-    fontWeight: "900",
-    fontSize: 16,
-  },
 });

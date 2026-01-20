@@ -1,32 +1,21 @@
 import React from "react";
 import { Tabs, useRouter } from "expo-router";
+import { View } from "react-native";
 
-import { HapticTab } from "@/components/haptic-tab";
 import { IconSymbol } from "@/components/ui/icon-symbol";
-import { Colors } from "@/constants/theme";
-import { useColorScheme } from "@/hooks/use-color-scheme";
-
 import LogoutButton from "@/components/LogoutButton";
 import { clearAppContext } from "@/src/storage/appContext";
 import { clearAdminSessionToken } from "@/lib/admin/session";
-import { HEADER_STYLE } from "@/src/ui/headerStyle";
-import { View } from "react-native";
-
-
+import { headerStyles } from "@/src/ui/headerStyle";
 
 function HeaderLogout() {
   const router = useRouter();
 
   return (
     <LogoutButton
-      variant="header"
-      label="Logout"
       onPress={async () => {
-        // clear both “admin mode” and “user mode”
         await clearAdminSessionToken();
         await clearAppContext();
-
-        // Force ContextGate UI to show (prevents auto-routing back to tabs)
         router.replace(`/context-gate?force=1&t=${Date.now()}`);
       }}
     />
@@ -34,26 +23,20 @@ function HeaderLogout() {
 }
 
 export default function TabLayout() {
-  const colorScheme = useColorScheme();
-  const tintColor = Colors[colorScheme ?? "light"].tint;
-
   return (
     <Tabs
       initialRouteName="home"
       screenOptions={{
-        ...HEADER_STYLE,
+        ...headerStyles.base,
         headerShown: true,
         headerRight: () => (
           <View style={{ flexDirection: "row", alignItems: "center" }}>
             <HeaderLogout />
           </View>
         ),
-        // keep your existing tabBar props below:
-        tabBarButton: HapticTab,
-        tabBarActiveTintColor: tintColor,
       }}
-      
     >
+      {/* Visible tabs */}
       <Tabs.Screen
         name="home"
         options={{
@@ -114,7 +97,7 @@ export default function TabLayout() {
         }}
       />
 
-      {/* Hidden routes */}
+      {/* Hidden routes (exist in app/(tabs) but should NOT show as a tab button) */}
       <Tabs.Screen name="scan-result" options={{ href: null }} />
       <Tabs.Screen name="restaurant-details" options={{ href: null }} />
       <Tabs.Screen name="menu-scan" options={{ href: null }} />

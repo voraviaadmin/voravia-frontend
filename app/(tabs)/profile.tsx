@@ -16,6 +16,7 @@ import { getAppContext, setAppContext, clearAppContext} from "@/src/storage/appC
 import { listUsers, upsertUser, UserProfile } from "@/src/storage/users";
 import { clampContext } from "@/src/context/contextRules";
 import { clearAdminSessionToken } from "../../lib/admin/session";
+import { Theme } from "@/src/ui/theme";
 
 import type { ContextScope } from "@/src/context/contextRules";
 import LogoutButton from "../../components/LogoutButton";
@@ -478,7 +479,7 @@ function Chip({ label, active, onPress }: { label: string; active: boolean; onPr
 }
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: "#f6f7fb" },
+  page: { flex: 1, backgroundColor: Theme.colors.bg},
   content: { padding: 16, paddingBottom: 28 },
   title: { fontSize: 34, fontWeight: "900", color: "#0b1220" },
   sub: { marginTop: 6, fontSize: 14, color: "#52606d" },
@@ -487,7 +488,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 14,
     borderRadius: 12,
-    backgroundColor: "#0f766e",
+    backgroundColor: Theme.colors.teal,
     alignSelf: "flex-start",
   },
   primaryBtnText: {
@@ -500,7 +501,7 @@ const styles = StyleSheet.create({
     marginTop: 14,
     padding: 14,
     borderRadius: 14,
-    backgroundColor: "rgba(0,0,0,0.04)",
+    backgroundColor: Theme.colors.card,
   },
   cardTitle: { fontSize: 16, fontWeight: "900" },
   cardSub: { marginTop: 6, opacity: 0.7 },

@@ -1,17 +1,11 @@
 import React, { useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  ActivityIndicator,
-} from "react-native";
+import { View, Text, Pressable, ScrollView, StyleSheet, ActivityIndicator } from "react-native";
 import { router, useFocusEffect } from "expo-router";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { useSafeAreaInsets, SafeAreaView } from "react-native-safe-area-context";
 
 import { listUsers, UserProfile } from "@/src/storage/users";
 import { getAppContext } from "@/src/storage/appContext";
+import { Theme } from "@/src/ui/theme";
 
 const API_BASE = process.env.EXPO_PUBLIC_API_BASE || "http://localhost:8787";
 
@@ -22,12 +16,7 @@ type GroupUsageResp = {
   provider: "all" | "google" | "openai";
   totalCostUsd: number;
   bySubjectUserId: Record<string, number>;
-  byService: {
-    provider: string;
-    service: string;
-    costUsd: number;
-    events: number;
-  }[];
+  byService: { provider: string; service: string; costUsd: number; events: number }[];
 };
 
 type UsageEventsResp = {
@@ -56,6 +45,8 @@ function isoDayUtc(d: Date) {
 }
 
 export default function UsageScreen() {
+  const insets = useSafeAreaInsets();
+
   const [days, setDays] = useState<7 | 30>(30);
   const [provider, setProvider] = useState<"all" | "google" | "openai">("all");
 
@@ -64,11 +55,8 @@ export default function UsageScreen() {
   const [data, setData] = useState<GroupUsageResp | null>(null);
 
   const [todayCostUsd, setTodayCostUsd] = useState<number>(0);
-
   const [users, setUsers] = useState<UserProfile[]>([]);
-  const [memberNameById, setMemberNameById] = useState<Record<string, string>>(
-    {}
-  );
+  const [memberNameById, setMemberNameById] = useState<Record<string, string>>({});
 
   useFocusEffect(
     React.useCallback(() => {
@@ -79,18 +67,14 @@ export default function UsageScreen() {
           setLoading(true);
           setErr(null);
 
-          // Load local users (fallback labels)
           const u = await listUsers();
           if (!cancelled) setUsers(u);
 
-          // Pick the active simulated user
-          const ctx = getAppContext();
-          const userId =
-            (ctx as any)?.simulateUserId || (ctx as any)?.userId || "u_head";
+          const ctx = getAppContext() as any;
+          const userId = String(ctx?.simulateUserId || ctx?.userId || "u_head");
 
-          // 1) Load /v1/me so we can map member ids -> names
           const meResp = await fetch(`${API_BASE}/v1/me`, {
-            headers: { "x-user-id": String(userId) },
+            headers: { "x-user-id": userId },
           });
           const me = await meResp.json();
 
@@ -101,7 +85,6 @@ export default function UsageScreen() {
           }
           if (!cancelled) setMemberNameById(nameMap);
 
-          // 2) Call group usage (billing owner is the family head / account owner)
           const billingOwnerId = String(me?.userId || userId);
 
           const usageResp = await fetch(
@@ -119,7 +102,6 @@ export default function UsageScreen() {
           const usageJson = (await usageResp.json()) as GroupUsageResp;
           if (!cancelled) setData(usageJson);
 
-          // 3) Compute "Today so far" from raw usage events (today UTC)
           const qs = new URLSearchParams();
           qs.set("limit", "500");
           if (provider !== "all") qs.set("provider", provider);
@@ -137,12 +119,8 @@ export default function UsageScreen() {
             for (const e of events) {
               const ts = String(e?.ts || "");
               if (!ts) continue;
-              const day = ts.slice(0, 10);
-              if (day !== today) continue;
-
-              if (String(e?.billingOwnerId || "") !== String(billingOwnerId))
-                continue;
-
+              if (ts.slice(0, 10) !== today) continue;
+              if (String(e?.billingOwnerId || "") !== String(billingOwnerId)) continue;
               todaySum += Number(e?.costUsd) || 0;
             }
           }
@@ -163,7 +141,6 @@ export default function UsageScreen() {
 
   const nameById = useMemo(() => {
     const m: Record<string, string> = {};
-
     for (const u of users) m[u.id] = u.name || u.id;
 
     m["u_head"] = m["u_head"] || "Head";
@@ -172,10 +149,7 @@ export default function UsageScreen() {
     m["u_child2"] = m["u_child2"] || "Child 2";
     m["u_self"] = m["u_self"] || "You";
 
-    for (const [id, label] of Object.entries(memberNameById)) {
-      m[id] = label;
-    }
-
+    for (const [id, label] of Object.entries(memberNameById)) m[id] = label;
     return m;
   }, [users, memberNameById]);
 
@@ -188,52 +162,49 @@ export default function UsageScreen() {
           raw && raw !== id
             ? raw
             : id === "u_self"
-            ? "You"
-            : id.startsWith("u_")
-            ? "Member"
-            : "Member";
+              ? "You"
+              : id.startsWith("u_")
+                ? "Member"
+                : "Member";
         return { id, name, cost: Number(cost) || 0 };
       })
-      .filter((r) => r.cost > 0 || r.name !== "Member")
       .sort((a, b) => b.cost - a.cost);
   }, [data, nameById]);
 
   return (
-    // ✅ SafeArea fixes notch/status bar overlap for the pills row
     <SafeAreaView style={styles.page} edges={["top"]}>
-      <ScrollView contentContainerStyle={styles.container}>
-        {/* Filters */}
+      <ScrollView
+        style={styles.page}
+        contentContainerStyle={{
+          paddingTop: 12,
+          paddingBottom: 24 + insets.bottom,
+          paddingHorizontal: 16,
+          gap: 12,
+        }}
+      >
+        <View style={styles.headerRow}>
+          <Text style={styles.h1}>Usage</Text>
+          <Pressable onPress={() => router.back()}>
+            <Text style={styles.done}>Done</Text>
+          </Pressable>
+        </View>
+
         <View style={styles.pillsRow}>
           <Pill label="7d" active={days === 7} onPress={() => setDays(7)} />
           <Pill label="30d" active={days === 30} onPress={() => setDays(30)} />
           <View style={{ width: 10 }} />
-          <Pill
-            label="All"
-            active={provider === "all"}
-            onPress={() => setProvider("all")}
-          />
-          <Pill
-            label="Google"
-            active={provider === "google"}
-            onPress={() => setProvider("google")}
-          />
-          <Pill
-            label="AI"
-            active={provider === "openai"}
-            onPress={() => setProvider("openai")}
-          />
+          <Pill label="All" active={provider === "all"} onPress={() => setProvider("all")} />
+          <Pill label="Google" active={provider === "google"} onPress={() => setProvider("google")} />
+          <Pill label="AI" active={provider === "openai"} onPress={() => setProvider("openai")} />
         </View>
 
-        {/* Period card */}
         <Card>
           <Text style={styles.muted}>This period</Text>
           <Text style={styles.big}>{money(data?.totalCostUsd ?? 0)}</Text>
           <Text style={styles.mutedSmall}>Includes today so far · Updates daily</Text>
 
           <View style={{ marginTop: 10 }}>
-            <View
-              style={{ height: 1, backgroundColor: "#E5E7EB", marginVertical: 10 }}
-            />
+            <View style={{ height: 1, backgroundColor: stylesVars.border, marginVertical: 10 }} />
             <Row left="Today so far" right={moneyTight(todayCostUsd ?? 0)} />
           </View>
         </Card>
@@ -252,20 +223,16 @@ export default function UsageScreen() {
           </Card>
         ) : (
           <>
-            {Object.keys(data?.bySubjectUserId || {}).length > 1 && (
-              <Card>
-                <Text style={styles.sectionTitle}>By member</Text>
-                <View style={{ marginTop: 10, gap: 10 }}>
-                  {byMemberRows.length === 0 ? (
-                    <Text style={styles.mutedSmall}>No usage yet.</Text>
-                  ) : (
-                    byMemberRows.map((r) => (
-                      <Row key={r.id} left={r.name} right={moneyTight(r.cost)} />
-                    ))
-                  )}
-                </View>
-              </Card>
-            )}
+            <Card>
+              <Text style={styles.sectionTitle}>By member</Text>
+              <View style={{ marginTop: 10, gap: 10 }}>
+                {byMemberRows.length === 0 ? (
+                  <Text style={styles.mutedSmall}>No usage yet.</Text>
+                ) : (
+                  byMemberRows.map((r) => <Row key={r.id} left={r.name} right={moneyTight(r.cost)} />)
+                )}
+              </View>
+            </Card>
 
             <Card>
               <Text style={styles.sectionTitle}>By service</Text>
@@ -285,14 +252,6 @@ export default function UsageScreen() {
             </Card>
           </>
         )}
-
-        {/* Optional: quick escape if you ever open usage from a deep link */}
-        <Pressable
-          onPress={() => router.back()}
-          style={{ marginTop: 6, alignSelf: "flex-start", padding: 6 }}
-        >
-          <Text style={{ color: "#0F766E", fontWeight: "700" }}>Back</Text>
-        </Pressable>
       </ScrollView>
     </SafeAreaView>
   );
@@ -302,26 +261,10 @@ function Card({ children }: { children: React.ReactNode }) {
   return <View style={styles.card}>{children}</View>;
 }
 
-function Pill({
-  label,
-  active,
-  onPress,
-}: {
-  label: string;
-  active: boolean;
-  onPress: () => void;
-}) {
+function Pill({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
   return (
-    <Pressable
-      onPress={onPress}
-      style={[styles.pill, active ? styles.pillActive : styles.pillInactive]}
-    >
-      <Text
-        style={[
-          styles.pillText,
-          active ? styles.pillTextActive : styles.pillTextInactive,
-        ]}
-      >
+    <Pressable onPress={onPress} style={[styles.pill, active ? styles.pillActive : styles.pillInactive]}>
+      <Text style={[styles.pillText, active ? styles.pillTextActive : styles.pillTextInactive]}>
         {label}
       </Text>
     </Pressable>
@@ -339,15 +282,21 @@ function Row({ left, right }: { left: string; right: string }) {
   );
 }
 
-const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: "#F3F4F6" },
+const stylesVars = {
+  bg: (Theme as any)?.colors?.bg || "#F3F4F6",
+  card: (Theme as any)?.colors?.card || "#FFFFFF",
+  text: (Theme as any)?.colors?.textPrimary || "#111827",
+  muted: (Theme as any)?.colors?.textMuted || "#6B7280",
+  brand: (Theme as any)?.colors?.brand || "#0F766E",
+  border: (Theme as any)?.colors?.border || "#E5E7EB",
+};
 
-  container: {
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 24,
-    gap: 12,
-  },
+const styles = StyleSheet.create({
+  page: { flex: 1, backgroundColor: stylesVars.bg },
+
+  headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  h1: { fontSize: 26, fontWeight: "800", color: stylesVars.text },
+  done: { fontSize: 16, fontWeight: "700", color: stylesVars.brand },
 
   pillsRow: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
   pill: {
@@ -357,29 +306,27 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(15,118,110,0.35)",
   },
-  pillActive: { backgroundColor: "#0F766E" },
+  pillActive: { backgroundColor: stylesVars.brand },
   pillInactive: { backgroundColor: "transparent" },
   pillText: { fontWeight: "700" },
   pillTextActive: { color: "white" },
-  pillTextInactive: { color: "#0F766E" },
+  pillTextInactive: { color: stylesVars.brand },
 
   card: {
-    backgroundColor: "white",
+    backgroundColor: stylesVars.card,
     borderRadius: 16,
     padding: 14,
-    shadowColor: "#000",
-    shadowOpacity: 0.05,
-    shadowRadius: 12,
-    elevation: 2,
+    borderWidth: 1,
+    borderColor: stylesVars.border,
   },
-  muted: { fontSize: 13, color: "#6B7280", fontWeight: "700" },
-  mutedSmall: { marginTop: 6, fontSize: 13, color: "#6B7280" },
-  big: { marginTop: 6, fontSize: 40, fontWeight: "900", color: "#0F766E" },
+  muted: { fontSize: 13, color: stylesVars.muted, fontWeight: "700" },
+  mutedSmall: { marginTop: 6, fontSize: 13, color: stylesVars.muted },
+  big: { marginTop: 6, fontSize: 40, fontWeight: "900", color: stylesVars.brand },
 
-  sectionTitle: { fontSize: 16, fontWeight: "800", color: "#111827" },
+  sectionTitle: { fontSize: 16, fontWeight: "800", color: stylesVars.text },
   errTitle: { fontSize: 16, fontWeight: "800", color: "#991B1B" },
 
   row: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  rowLeft: { flex: 1, paddingRight: 10, fontSize: 15, fontWeight: "700", color: "#111827" },
-  rowRight: { fontSize: 15, fontWeight: "800", color: "#0F766E" },
+  rowLeft: { flex: 1, paddingRight: 10, fontSize: 15, fontWeight: "700", color: stylesVars.text },
+  rowRight: { fontSize: 15, fontWeight: "800", color: stylesVars.brand },
 });
