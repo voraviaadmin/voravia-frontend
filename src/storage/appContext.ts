@@ -65,3 +65,11 @@ export async function getAppContext(): Promise<AppContextState> {
 export async function setAppContext(next: AppContextState) {
   await AsyncStorage.setItem(KEY, JSON.stringify(next));
 }
+
+
+export async function clearAppContext() {
+  // If your app context is stored under a single key, remove it.
+  // If you store it as an object, set it to an empty/default value.
+  await setAppContext({ segment: null, currentUserId: null } as any);
+}
+

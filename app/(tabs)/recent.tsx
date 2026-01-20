@@ -10,7 +10,7 @@ import {
   RefreshControl,
 } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
-import { fetchFamilyMembers, FamilyMember } from "../lib/family";
+import { fetchFamilyMembers, FamilyMember } from "../../lib/family";
 
 function getApiBaseUrl() {
   return (

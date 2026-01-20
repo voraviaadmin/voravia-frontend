@@ -12,6 +12,8 @@ import { clampContext, getContextEligibility, getAvailableContexts } from "@/src
 
 // Optional: keep backend /v1/me in sync when choosing context
 import { patchMe } from "@/src/hooks/useMe";
+import { getAdminSessionToken } from "../lib/admin/session";
+
 
 function firstParam(v: string | string[] | undefined): string | undefined {
   if (Array.isArray(v)) return v[0];
@@ -28,6 +30,7 @@ export default function ContextGate() {
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [currentUserId, setCurrentUserId] = useState<string>("head");
   const [hasFamilyGroup, setHasFamilyGroup] = useState(false);
+  const tRaw = firstParam(params.t);
 
   const me = useMemo(
     () => users.find((u) => u.id === currentUserId) ?? null,
@@ -60,11 +63,24 @@ export default function ContextGate() {
   useEffect(() => {
     let alive = true;
 
+    
+
     (async () => {
+      
+       // 🔐 ADMIN SESSION CHECK (HIGHEST PRIORITY)
+       const adminToken = await getAdminSessionToken();
+       if (adminToken) {
+         router.replace("/admin");
+         return;
+       }
+      
+      
       const ctx = await getAppContext();
       const us = await listUsers();
       const gs = await listGroups();
       const hasFam = gs.some((g) => g.type === "Family");
+      
+
 
       if (!alive) return;
 
@@ -81,12 +97,12 @@ export default function ContextGate() {
         return;
       }
 
-      // If saved segment is eligible, go straight to Groups tab
+    
       const elig = getContextEligibility(resolvedMe, { hasFamilyGroup: hasFam });
       const saved = (ctx.segment ?? "individual") as ContextScope;
 
       if (elig[saved]) {
-        router.replace("/(tabs)/groups");
+        router.replace("/(tabs)/home");
         return;
       }
 
@@ -100,7 +116,7 @@ export default function ContextGate() {
     return () => {
       alive = false;
     };
-  }, [forceShow, firstParam(params.t)]); // t helps force a remount-like re-run
+  }, [forceShow, tRaw]); // t helps force a remount-like re-run
 
   const choose = useCallback(
     async (scope: ContextScope) => {
@@ -109,7 +125,8 @@ export default function ContextGate() {
       // Best-effort: keep backend truth aligned too
       patchMe({ mode: scope as any }).catch(() => {});
 
-      router.replace("/(tabs)/groups");
+      router.replace("/(tabs)/home");
+
     },
     [currentUserId]
   );
@@ -142,6 +159,14 @@ export default function ContextGate() {
       <Pressable onPress={() => router.replace("/(tabs)/profile")} style={styles.secondaryBtn}>
         <Text style={styles.secondaryBtnText}>Edit membership IDs</Text>
       </Pressable>
+
+      <Pressable
+        onPress={() => router.replace("/admin/login")}
+        style={{ padding: 14, borderRadius: 12, borderWidth: 1, marginTop: 12 }}
+      >
+        <Text style={{ textAlign: "center" }}>Admin Console</Text>
+      </Pressable>
+
 
       {__DEV__ ? (
         <Text style={styles.devNote}>

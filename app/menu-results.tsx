@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { View, Text, Button, ScrollView } from "react-native";
-import { api } from "./lib/api";
+import { api } from "../lib/api";
 
 export default function MenuResults() {
   const params = new URLSearchParams(

@@ -2,7 +2,7 @@ import React, { useCallback, useMemo, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Platform } from "react-native";
 import { useRouter, useFocusEffect, router } from "expo-router";
 import Svg, { Circle } from "react-native-svg";
-import { fetchMe, getApiBaseUrl, MeResponse } from "../lib/me";
+import { fetchMe, getApiBaseUrl, MeResponse } from "../../lib/me";
 
 
 type DaySummary = {

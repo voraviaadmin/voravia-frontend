@@ -496,7 +496,7 @@ export default function GroupsScreen() {
         keyExtractor={(item, i) => `${item.title}-${i}`}
         contentContainerStyle={{ paddingTop: 12, paddingBottom: 16 }}
         renderItem={({ item }) => <RollupCard item={item} />}
-        ListFooterComponent={
+        /* ListFooterComponent={
           <View style={{ marginTop: 14, paddingBottom: 8 }}>
             <Pressable
               onPress={() =>
@@ -510,7 +510,7 @@ export default function GroupsScreen() {
               <Text style={styles.changeContextBtnText}>Change context</Text>
             </Pressable>
           </View>
-        }
+        }*/
       />
     </View>
   );

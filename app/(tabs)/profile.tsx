@@ -11,12 +11,15 @@ import {
 
 import { getSavedProfile, saveProfile } from "@/src/storage/voraviaStorage";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useFocusEffect } from "expo-router";
-import { getAppContext, setAppContext } from "@/src/storage/appContext";
+import { useFocusEffect, useRouter } from "expo-router";
+import { getAppContext, setAppContext, clearAppContext} from "@/src/storage/appContext";
 import { listUsers, upsertUser, UserProfile } from "@/src/storage/users";
 import { clampContext } from "@/src/context/contextRules";
+import { clearAdminSessionToken } from "../../lib/admin/session";
 
 import type { ContextScope } from "@/src/context/contextRules";
+import LogoutButton from "../../components/LogoutButton";
+
 
 function normalizeSegment(seg: any): ContextScope {
   // supports old stored values + new values
@@ -115,6 +118,20 @@ const [insuranceId, setInsuranceId] = useState("");
 const [corporateId, setCorporateId] = useState("");
 const [saving, setSaving] = useState(false);
 const [saveMsg, setSaveMsg] = useState<string | null>(null);
+
+const router = useRouter();
+
+async function onLogout() {
+  // Clears user context (so app won’t auto-enter Home)
+  await clearAppContext();
+
+  // Also clear admin session if you want a true “reset”
+  await clearAdminSessionToken();
+
+  // Go to Context Gate
+  router.replace("/context-gate");
+}
+
 
 
 const currentUser = useMemo(
@@ -427,6 +444,8 @@ const setActiveUser = useCallback(
   <Text style={styles.hint}>
     These IDs drive rollups in Health Groups. (No backend yet; stored locally.)
   </Text>
+
+
 </View>
 
 
@@ -568,5 +587,6 @@ const styles = StyleSheet.create({
   smallMuted: { color: "#52606d", fontSize: 12 },
 
   footerRow: { marginTop: 14, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+
   
 });

@@ -1,6 +1,14 @@
 import React, { useMemo, useState } from "react";
-import { View, Text, Pressable, ScrollView, StyleSheet, ActivityIndicator } from "react-native";
+import {
+  View,
+  Text,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  ActivityIndicator,
+} from "react-native";
 import { router, useFocusEffect } from "expo-router";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import { listUsers, UserProfile } from "@/src/storage/users";
 import { getAppContext } from "@/src/storage/appContext";
@@ -14,7 +22,12 @@ type GroupUsageResp = {
   provider: "all" | "google" | "openai";
   totalCostUsd: number;
   bySubjectUserId: Record<string, number>;
-  byService: { provider: string; service: string; costUsd: number; events: number }[];
+  byService: {
+    provider: string;
+    service: string;
+    costUsd: number;
+    events: number;
+  }[];
 };
 
 type UsageEventsResp = {
@@ -39,7 +52,6 @@ function moneyTight(x: number) {
 }
 
 function isoDayUtc(d: Date) {
-  // YYYY-MM-DD in UTC
   return d.toISOString().slice(0, 10);
 }
 
@@ -54,7 +66,9 @@ export default function UsageScreen() {
   const [todayCostUsd, setTodayCostUsd] = useState<number>(0);
 
   const [users, setUsers] = useState<UserProfile[]>([]);
-  const [memberNameById, setMemberNameById] = useState<Record<string, string>>({});
+  const [memberNameById, setMemberNameById] = useState<Record<string, string>>(
+    {}
+  );
 
   useFocusEffect(
     React.useCallback(() => {
@@ -71,13 +85,13 @@ export default function UsageScreen() {
 
           // Pick the active simulated user
           const ctx = getAppContext();
-          const userId = (ctx as any)?.simulateUserId || (ctx as any)?.userId || "u_head";
+          const userId =
+            (ctx as any)?.simulateUserId || (ctx as any)?.userId || "u_head";
 
           // 1) Load /v1/me so we can map member ids -> names
           const meResp = await fetch(`${API_BASE}/v1/me`, {
             headers: { "x-user-id": String(userId) },
           });
-
           const me = await meResp.json();
 
           const nameMap: Record<string, string> = {};
@@ -106,7 +120,6 @@ export default function UsageScreen() {
           if (!cancelled) setData(usageJson);
 
           // 3) Compute "Today so far" from raw usage events (today UTC)
-          // Keep this lightweight: last 500 events max.
           const qs = new URLSearchParams();
           qs.set("limit", "500");
           if (provider !== "all") qs.set("provider", provider);
@@ -124,11 +137,11 @@ export default function UsageScreen() {
             for (const e of events) {
               const ts = String(e?.ts || "");
               if (!ts) continue;
-              const day = ts.slice(0, 10); // ISO starts with YYYY-MM-DD
+              const day = ts.slice(0, 10);
               if (day !== today) continue;
 
-              // Only count events billed to this billing owner
-              if (String(e?.billingOwnerId || "") !== String(billingOwnerId)) continue;
+              if (String(e?.billingOwnerId || "") !== String(billingOwnerId))
+                continue;
 
               todaySum += Number(e?.costUsd) || 0;
             }
@@ -151,17 +164,14 @@ export default function UsageScreen() {
   const nameById = useMemo(() => {
     const m: Record<string, string> = {};
 
-    // Local users
     for (const u of users) m[u.id] = u.name || u.id;
 
-    // Friendly fallbacks
     m["u_head"] = m["u_head"] || "Head";
     m["u_spouse"] = m["u_spouse"] || "Spouse";
     m["u_child1"] = m["u_child1"] || "Child 1";
     m["u_child2"] = m["u_child2"] || "Child 2";
     m["u_self"] = m["u_self"] || "You";
 
-    // Prefer server-provided family member display names
     for (const [id, label] of Object.entries(memberNameById)) {
       m[id] = label;
     }
@@ -174,100 +184,117 @@ export default function UsageScreen() {
     return Object.entries(map)
       .map(([id, cost]) => {
         const raw = nameById[id];
-        // Clean: never show raw IDs
         const name =
           raw && raw !== id
             ? raw
             : id === "u_self"
-              ? "You"
-              : id.startsWith("u_")
-                ? "Member"
-                : "Member";
+            ? "You"
+            : id.startsWith("u_")
+            ? "Member"
+            : "Member";
         return { id, name, cost: Number(cost) || 0 };
       })
-      .filter((r) => r.cost > 0 || r.name !== "Member") // keep meaningful rows
+      .filter((r) => r.cost > 0 || r.name !== "Member")
       .sort((a, b) => b.cost - a.cost);
   }, [data, nameById]);
 
   return (
-    <ScrollView style={styles.page} contentContainerStyle={{ padding: 16, gap: 12 }}>
-      <View style={styles.headerRow}>
-        <Text style={styles.h1}>Usage</Text>
-        <Pressable onPress={() => router.back()}>
-          <Text style={styles.done}>Done</Text>
-        </Pressable>
-      </View>
-
-      <View style={styles.pillsRow}>
-        <Pill label="7d" active={days === 7} onPress={() => setDays(7)} />
-        <Pill label="30d" active={days === 30} onPress={() => setDays(30)} />
-        <View style={{ width: 10 }} />
-        <Pill label="All" active={provider === "all"} onPress={() => setProvider("all")} />
-        <Pill label="Google" active={provider === "google"} onPress={() => setProvider("google")} />
-        <Pill label="AI" active={provider === "openai"} onPress={() => setProvider("openai")} />
-      </View>
-
-      <Card>
-        <Text style={styles.muted}>This period</Text>
-        <Text style={styles.big}>{money(data?.totalCostUsd ?? 0)}</Text>
-
-        {/* NEW: Today clearly labeled + "Today so far" line item */}
-        <Text style={styles.mutedSmall}>Includes today so far · Updates daily</Text>
-
-        <View style={{ marginTop: 10 }}>
-          <View style={{ height: 1, backgroundColor: "#E5E7EB", marginVertical: 10 }} />
-          <Row left="Today so far" right={moneyTight(todayCostUsd ?? 0)} />
+    // ✅ SafeArea fixes notch/status bar overlap for the pills row
+    <SafeAreaView style={styles.page} edges={["top"]}>
+      <ScrollView contentContainerStyle={styles.container}>
+        {/* Filters */}
+        <View style={styles.pillsRow}>
+          <Pill label="7d" active={days === 7} onPress={() => setDays(7)} />
+          <Pill label="30d" active={days === 30} onPress={() => setDays(30)} />
+          <View style={{ width: 10 }} />
+          <Pill
+            label="All"
+            active={provider === "all"}
+            onPress={() => setProvider("all")}
+          />
+          <Pill
+            label="Google"
+            active={provider === "google"}
+            onPress={() => setProvider("google")}
+          />
+          <Pill
+            label="AI"
+            active={provider === "openai"}
+            onPress={() => setProvider("openai")}
+          />
         </View>
-      </Card>
 
-      {loading ? (
+        {/* Period card */}
         <Card>
-          <View style={{ paddingVertical: 10, alignItems: "center" }}>
-            <ActivityIndicator />
-            <Text style={styles.mutedSmall}>Loading usage…</Text>
+          <Text style={styles.muted}>This period</Text>
+          <Text style={styles.big}>{money(data?.totalCostUsd ?? 0)}</Text>
+          <Text style={styles.mutedSmall}>Includes today so far · Updates daily</Text>
+
+          <View style={{ marginTop: 10 }}>
+            <View
+              style={{ height: 1, backgroundColor: "#E5E7EB", marginVertical: 10 }}
+            />
+            <Row left="Today so far" right={moneyTight(todayCostUsd ?? 0)} />
           </View>
         </Card>
-      ) : err ? (
-        <Card>
-          <Text style={styles.errTitle}>Couldn’t load usage</Text>
-          <Text style={styles.mutedSmall}>{err}</Text>
-        </Card>
-      ) : (
-        <>
-          {Object.keys(data?.bySubjectUserId || {}).length > 1 && (
+
+        {loading ? (
+          <Card>
+            <View style={{ paddingVertical: 10, alignItems: "center" }}>
+              <ActivityIndicator />
+              <Text style={styles.mutedSmall}>Loading usage…</Text>
+            </View>
+          </Card>
+        ) : err ? (
+          <Card>
+            <Text style={styles.errTitle}>Couldn’t load usage</Text>
+            <Text style={styles.mutedSmall}>{err}</Text>
+          </Card>
+        ) : (
+          <>
+            {Object.keys(data?.bySubjectUserId || {}).length > 1 && (
+              <Card>
+                <Text style={styles.sectionTitle}>By member</Text>
+                <View style={{ marginTop: 10, gap: 10 }}>
+                  {byMemberRows.length === 0 ? (
+                    <Text style={styles.mutedSmall}>No usage yet.</Text>
+                  ) : (
+                    byMemberRows.map((r) => (
+                      <Row key={r.id} left={r.name} right={moneyTight(r.cost)} />
+                    ))
+                  )}
+                </View>
+              </Card>
+            )}
+
             <Card>
-              <Text style={styles.sectionTitle}>By member</Text>
+              <Text style={styles.sectionTitle}>By service</Text>
               <View style={{ marginTop: 10, gap: 10 }}>
-                {byMemberRows.length === 0 ? (
+                {(data?.byService || []).length === 0 ? (
                   <Text style={styles.mutedSmall}>No usage yet.</Text>
                 ) : (
-                  byMemberRows.map((r) => (
-                    <Row key={r.id} left={r.name} right={moneyTight(r.cost)} />
+                  data!.byService.map((s) => (
+                    <Row
+                      key={`${s.provider}:${s.service}`}
+                      left={`${s.provider} · ${s.service}`}
+                      right={moneyTight(s.costUsd)}
+                    />
                   ))
                 )}
               </View>
             </Card>
-          )}
+          </>
+        )}
 
-          <Card>
-            <Text style={styles.sectionTitle}>By service</Text>
-            <View style={{ marginTop: 10, gap: 10 }}>
-              {(data?.byService || []).length === 0 ? (
-                <Text style={styles.mutedSmall}>No usage yet.</Text>
-              ) : (
-                data!.byService.map((s) => (
-                  <Row
-                    key={`${s.provider}:${s.service}`}
-                    left={`${s.provider} · ${s.service}`}
-                    right={moneyTight(s.costUsd)}
-                  />
-                ))
-              )}
-            </View>
-          </Card>
-        </>
-      )}
-    </ScrollView>
+        {/* Optional: quick escape if you ever open usage from a deep link */}
+        <Pressable
+          onPress={() => router.back()}
+          style={{ marginTop: 6, alignSelf: "flex-start", padding: 6 }}
+        >
+          <Text style={{ color: "#0F766E", fontWeight: "700" }}>Back</Text>
+        </Pressable>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
@@ -275,13 +302,26 @@ function Card({ children }: { children: React.ReactNode }) {
   return <View style={styles.card}>{children}</View>;
 }
 
-function Pill({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+function Pill({
+  label,
+  active,
+  onPress,
+}: {
+  label: string;
+  active: boolean;
+  onPress: () => void;
+}) {
   return (
     <Pressable
       onPress={onPress}
       style={[styles.pill, active ? styles.pillActive : styles.pillInactive]}
     >
-      <Text style={[styles.pillText, active ? styles.pillTextActive : styles.pillTextInactive]}>
+      <Text
+        style={[
+          styles.pillText,
+          active ? styles.pillTextActive : styles.pillTextInactive,
+        ]}
+      >
         {label}
       </Text>
     </Pressable>
@@ -301,9 +341,13 @@ function Row({ left, right }: { left: string; right: string }) {
 
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: "#F3F4F6" },
-  headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  h1: { fontSize: 26, fontWeight: "800", color: "#111827" },
-  done: { fontSize: 16, fontWeight: "700", color: "#0F766E" },
+
+  container: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 24,
+    gap: 12,
+  },
 
   pillsRow: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
   pill: {
