@@ -1,34 +1,33 @@
+import { api } from "./api";
+import { fetchMe } from "./me";
+
 export type FamilyMember = { id: string; name: string };
 
-function getApiBaseUrl() {
-  return (
-    process.env.EXPO_PUBLIC_API_BASE_URL ||
-    process.env.EXPO_PUBLIC_API_URL ||
-    "http://localhost:8787"
-  );
-}
-
+// MVP: one shared member list function for the app.
+// - Individual: single derived member
+// - Family: /v1/family/members
 export async function fetchFamilyMembers(): Promise<FamilyMember[]> {
-  const api = getApiBaseUrl();
+  const me = await fetchMe().catch(() => null);
 
-  // determine mode
-  const meResp = await fetch(`${api}/v1/me`, { method: "GET" });
-  const me = await meResp.json().catch(() => ({}));
-  const profileType = String(me?.profileType || "individual"); // "individual" | "family"
+  // If /v1/me fails, safest fallback is single-member list
+  if (!me) return [{ id: "u_self", name: "Me" }];
 
-  // Individual → only self
-  if (profileType === "individual") {
-    return [{ id: "u_self", name: "Me" }];
+  if (me.activeProfile === "individual") {
+    // Individual mode => only self
+    return [{ id: me.userId || "u_self", name: "Me" }];
   }
 
-  // Family → ONLY family members list (no forced "Me")
-  const resp = await fetch(`${api}/v1/family/members`, { method: "GET" });
-  const json = await resp.json().catch(() => ({}));
+  // Family mode => only family members list
+  const json = (await api<any>(`/v1/family/members`, { method: "GET" }).catch(
+    () => ({})
+  )) as any;
+
   const items = Array.isArray(json?.items) ? json.items : [];
 
-  const members: FamilyMember[] = items
+  return items
     .filter((x: any) => x && typeof x.id === "string")
-    .map((x: any) => ({ id: String(x.id), name: String(x.name ?? x.id) }));
-
-  return members;
+    .map((x: any) => ({
+      id: String(x.id),
+      name: String(x.name ?? x.id),
+    }));
 }

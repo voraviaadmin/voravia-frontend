@@ -481,7 +481,7 @@ function Chip({ label, active, onPress }: { label: string; active: boolean; onPr
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: Theme.colors.bg},
   content: { padding: 16, paddingBottom: 28 },
-  title: { fontSize: 34, fontWeight: "900", color: "#0b1220" },
+  title: { fontSize: 28, fontWeight: "800", color: "#0B2A2F", letterSpacing: 0.2 },
   sub: { marginTop: 6, fontSize: 14, color: "#52606d" },
 
   primaryBtn: {

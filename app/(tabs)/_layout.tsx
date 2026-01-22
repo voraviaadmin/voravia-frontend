@@ -1,6 +1,5 @@
 import React from "react";
 import { Tabs, useRouter } from "expo-router";
-import { View } from "react-native";
 
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import LogoutButton from "@/components/LogoutButton";
@@ -29,21 +28,19 @@ export default function TabLayout() {
       screenOptions={{
         ...headerStyles.base,
         headerShown: true,
-        headerRight: () => (
-          <View style={{ flexDirection: "row", alignItems: "center" }}>
-            <HeaderLogout />
-          </View>
-        ),
+
+        // ✅ Let navigation control the right-side container sizing
+        headerRight: () => <HeaderLogout />,
+        headerRightContainerStyle: {
+          paddingRight: 12,
+        },
       }}
     >
-      {/* Visible tabs */}
       <Tabs.Screen
         name="home"
         options={{
           title: "Home",
-          tabBarIcon: ({ color }) => (
-            <IconSymbol size={26} name="house.fill" color={color} />
-          ),
+          tabBarIcon: ({ color }) => <IconSymbol size={26} name="house.fill" color={color} />,
         }}
       />
 
@@ -51,9 +48,7 @@ export default function TabLayout() {
         name="scan"
         options={{
           title: "Scan",
-          tabBarIcon: ({ color }) => (
-            <IconSymbol size={26} name="camera.fill" color={color} />
-          ),
+          tabBarIcon: ({ color }) => <IconSymbol size={26} name="camera.fill" color={color} />,
         }}
       />
 
@@ -61,9 +56,7 @@ export default function TabLayout() {
         name="recent"
         options={{
           title: "Recent",
-          tabBarIcon: ({ color }) => (
-            <IconSymbol size={26} name="clock.fill" color={color} />
-          ),
+          tabBarIcon: ({ color }) => <IconSymbol size={26} name="clock.fill" color={color} />,
         }}
       />
 
@@ -71,9 +64,7 @@ export default function TabLayout() {
         name="restaurants"
         options={{
           title: "Eat Out",
-          tabBarIcon: ({ color }) => (
-            <IconSymbol size={26} name="fork.knife" color={color} />
-          ),
+          tabBarIcon: ({ color }) => <IconSymbol size={26} name="fork.knife" color={color} />,
         }}
       />
 
@@ -81,9 +72,7 @@ export default function TabLayout() {
         name="groups"
         options={{
           title: "Groups",
-          tabBarIcon: ({ color }) => (
-            <IconSymbol size={26} name="person.2.fill" color={color} />
-          ),
+          tabBarIcon: ({ color }) => <IconSymbol size={26} name="person.2.fill" color={color} />,
         }}
       />
 
@@ -91,13 +80,11 @@ export default function TabLayout() {
         name="profile"
         options={{
           title: "Profile",
-          tabBarIcon: ({ color }) => (
-            <IconSymbol size={26} name="person.crop.circle.fill" color={color} />
-          ),
+          tabBarIcon: ({ color }) => <IconSymbol size={26} name="person.crop.circle.fill" color={color} />,
         }}
       />
 
-      {/* Hidden routes (exist in app/(tabs) but should NOT show as a tab button) */}
+      {/* Hidden routes */}
       <Tabs.Screen name="scan-result" options={{ href: null }} />
       <Tabs.Screen name="restaurant-details" options={{ href: null }} />
       <Tabs.Screen name="menu-scan" options={{ href: null }} />

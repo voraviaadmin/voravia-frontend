@@ -8,17 +8,12 @@ import {
   ActivityIndicator,
   ScrollView,
   RefreshControl,
+  Alert,
 } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { fetchFamilyMembers, FamilyMember } from "../../lib/family";
-
-function getApiBaseUrl() {
-  return (
-    process.env.EXPO_PUBLIC_API_BASE_URL ||
-    process.env.EXPO_PUBLIC_API_URL ||
-    "http://localhost:8787"
-  );
-}
+import { getAppContext } from "@/src/storage/appContext";
+import { API_BASE } from "../../lib/api";
 
 type LogItem = {
   id: string;
@@ -30,11 +25,15 @@ type LogItem = {
   score?: number;
   label?: string;
   photoUri?: string;
+
+  rating?: { score?: number; label?: string } | null;
+  result?: { score?: number; label?: string } | null;
+  ratingScore?: number;
+  resultScore?: number;
 };
 
 type MeResponse = {
   userId?: string;
-  activeProfile?: string;
   mode?: "individual" | "family" | "workplace";
   family?: { members?: Array<{ id: string; name?: string; displayName?: string }> };
 };
@@ -70,72 +69,89 @@ function getDayBucket(createdAt?: string): "Today" | "Yesterday" | "Earlier" {
   return "Earlier";
 }
 
+function localIdToBackendActorId(id: string) {
+  if (!id) return "u_head";
+  if (id.startsWith("u_")) return id;
+  if (id === "head") return "u_head";
+  if (id === "spouse") return "u_spouse";
+  if (id === "child1") return "u_child1";
+  if (id === "child2") return "u_child2";
+  return "u_head";
+}
+
+function deriveScore(item: LogItem) {
+  const raw =
+    item.score ??
+    item.rating?.score ??
+    item.result?.score ??
+    (item as any).ratingScore ??
+    (item as any).resultScore;
+
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function deriveLabel(item: LogItem, score: number) {
+  const raw = item.label || item.rating?.label || item.result?.label;
+  if (raw && String(raw).trim()) return String(raw);
+
+  if (score >= 80) return "Great";
+  if (score >= 60) return "Good";
+  if (score >= 40) return "Okay";
+  return "Poor";
+}
+
 export default function RecentScreen() {
   const router = useRouter();
 
+  const api = useMemo(() => API_BASE, []);
   const [items, setItems] = useState<LogItem[]>([]);
   const [family, setFamily] = useState<FamilyMember[]>([]);
   const [me, setMe] = useState<MeResponse | null>(null);
-  const [meId, setMeId] = useState<string>("u_self");
 
   const [busy, setBusy] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  const api = useMemo(() => getApiBaseUrl(), []);
-
   const userDisplayName = useCallback(
     (userId?: string) => {
       if (!userId) return "Me";
-
-      // Prefer /v1/me family member display names (source of truth for order + label)
       const fromMe =
         me?.family?.members?.find((m) => String(m.id) === String(userId))?.displayName ||
         me?.family?.members?.find((m) => String(m.id) === String(userId))?.name;
-
       if (fromMe) return fromMe;
-
-      // Fallback to local family list (existing behavior)
       return family.find((m) => m.id === userId)?.name ?? userId;
     },
     [family, me]
   );
 
-  const fetchMe = useCallback(async (): Promise<MeResponse> => {
-    const r = await fetch(`${api}/v1/me`, { method: "GET" });
-    const j = (await r.json().catch(() => null)) as MeResponse | null;
-    if (!r.ok || !j) throw new Error(`Failed to load /v1/me (${r.status})`);
-    return j;
-  }, [api]);
-
   const load = useCallback(async () => {
     try {
       setError(null);
 
-      const [logsResp, fam, meJson] = await Promise.all([
-        fetch(`${api}/v1/logs`, { method: "GET" }),
-        fetchFamilyMembers(),
-        fetchMe().catch(() => ({} as MeResponse)), // non-fatal fallback
+      const ctx = await getAppContext();
+      const actor = localIdToBackendActorId(String((ctx as any)?.currentUserId || "head"));
+
+      const [logsResp, famResp, meResp] = await Promise.all([
+        fetch(`${api}/v1/logs`, { method: "GET", headers: { "x-user-id": actor } }),
+        fetchFamilyMembers().catch(() => [] as any),
+        fetch(`${api}/v1/me`, { method: "GET", headers: { "x-user-id": actor } }).catch(() => null),
       ]);
 
       const logsJson = await logsResp.json().catch(() => ({}));
-      if (!logsResp.ok) {
-        throw new Error(logsJson?.message || logsJson?.error || `Failed (${logsResp.status})`);
-      }
+      if (!logsResp.ok) throw new Error(logsJson?.message || logsJson?.error || `Failed (${logsResp.status})`);
+
+      const meJson = meResp ? await meResp.json().catch(() => null) : null;
 
       const list = Array.isArray(logsJson?.items) ? (logsJson.items as LogItem[]) : [];
-
-      // Keep original global sort (createdAt desc)
       const sorted = list
         .slice()
         .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
 
-      setFamily(fam);
-      setItems(sorted);
-
+      setFamily(famResp);
       setMe(meJson || null);
-      const nextMeId = String(meJson?.userId || "").trim();
-      setMeId(nextMeId || "u_self");
+      setItems(sorted);
     } catch (e: any) {
       setError(e?.message ?? "Failed to load logs");
       setItems([]);
@@ -144,7 +160,7 @@ export default function RecentScreen() {
       setBusy(false);
       setRefreshing(false);
     }
-  }, [api, fetchMe]);
+  }, [api]);
 
   useFocusEffect(
     useCallback(() => {
@@ -158,43 +174,47 @@ export default function RecentScreen() {
     load();
   }, [load]);
 
+  const deleteLog = useCallback(
+    async (logId: string) => {
+      const ctx = await getAppContext();
+      const actor = localIdToBackendActorId(String((ctx as any)?.currentUserId || "head"));
+
+      const resp = await fetch(`${api}/v1/logs/${encodeURIComponent(logId)}`, {
+        method: "DELETE",
+        headers: { "x-user-id": actor },
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(json?.error || json?.message || "Delete failed");
+
+      // Optimistic remove
+      setItems((prev) => prev.filter((x) => String(x.id) !== String(logId)));
+    },
+    [api]
+  );
+
   const grouped = useMemo(() => {
     const groups: Record<"Today" | "Yesterday" | "Earlier", LogItem[]> = {
       Today: [],
       Yesterday: [],
       Earlier: [],
     };
-
-    for (const it of items) {
-      groups[getDayBucket(it.createdAt)].push(it);
-    }
+    for (const it of items) groups[getDayBucket(it.createdAt)].push(it);
 
     const byTimeDesc = (a: LogItem, b: LogItem) =>
       String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
 
-    // For each day bucket:
-    // Member order EXACTLY matches /v1/me.family.members
-    // And within each member: newest -> oldest
     const orderBucket = (arr: LogItem[]) => {
-      const memberOrder = (me?.family?.members ?? [])
-        .map((m) => String(m.id))
-        .filter(Boolean);
-
-      // If we don't have a family list (individual mode), just sort newest->oldest overall
+      const memberOrder = (me?.family?.members ?? []).map((m) => String(m.id)).filter(Boolean);
       if (!memberOrder.length) return arr.slice().sort(byTimeDesc);
 
-      // Bucket logs by userId
       const buckets = new Map<string, LogItem[]>();
       for (const it of arr) {
         const uid = String(it.userId || "");
         if (!buckets.has(uid)) buckets.set(uid, []);
         buckets.get(uid)!.push(it);
       }
-
-      // Sort each member bucket newest->oldest
       for (const list of buckets.values()) list.sort(byTimeDesc);
 
-      // Emit in /v1/me family member order
       const out: LogItem[] = [];
       for (const uid of memberOrder) {
         const list = buckets.get(uid);
@@ -202,13 +222,11 @@ export default function RecentScreen() {
         buckets.delete(uid);
       }
 
-      // Append any remaining userIds (not in /v1/me.family.members)
       const remainingIds = Array.from(buckets.keys()).sort();
       for (const uid of remainingIds) {
         const list = buckets.get(uid);
         if (list?.length) out.push(...list);
       }
-
       return out;
     };
 
@@ -217,7 +235,7 @@ export default function RecentScreen() {
       Yesterday: orderBucket(groups.Yesterday),
       Earlier: orderBucket(groups.Earlier),
     };
-  }, [items, me, meId]);
+  }, [items, me]);
 
   return (
     <ScrollView
@@ -268,8 +286,8 @@ export default function RecentScreen() {
               <Text style={styles.sectionHeader}>{section}</Text>
 
               {list.map((it) => {
-                const label = String(it.label || "Okay");
-                const score = Number.isFinite(Number(it.score)) ? Math.round(Number(it.score)) : 0;
+                const score = deriveScore(it);
+                const label = deriveLabel(it, score);
                 const pillStyle =
                   score >= 80 ? styles.pillGood : score >= 60 ? styles.pillOk : styles.pillBad;
 
@@ -278,6 +296,26 @@ export default function RecentScreen() {
                     key={it.id}
                     style={styles.rowCard}
                     onPress={() => router.push({ pathname: "/recent-log", params: { id: it.id } })}
+                    onLongPress={() => {
+                      Alert.alert(
+                        "Delete log?",
+                        `${it.dishName || "Unknown dish"}\n${userDisplayName(it.userId)} · ${capitalize(it.mealType)} · ${fmtTime(it.createdAt)}`,
+                        [
+                          { text: "Cancel", style: "cancel" },
+                          {
+                            text: "Delete",
+                            style: "destructive",
+                            onPress: async () => {
+                              try {
+                                await deleteLog(it.id);
+                              } catch (e: any) {
+                                Alert.alert("Delete failed", e?.message || "Couldn’t delete.");
+                              }
+                            },
+                          },
+                        ]
+                      );
+                    }}
                   >
                     <View style={styles.thumbWrap}>
                       {it.photoUri ? (
@@ -316,7 +354,7 @@ export default function RecentScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F5FAFB", paddingHorizontal: 16, paddingTop: 16 },
-  title: { fontSize: 32, fontWeight: "900", color: "#0B2A2F" },
+  title: { fontSize: 28, fontWeight: "800", color: "#0B2A2F", letterSpacing: 0.2 },
   sub: { marginTop: 6, color: "#4A6468", fontWeight: "700", marginBottom: 10 },
 
   card: {

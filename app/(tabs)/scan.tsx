@@ -13,6 +13,10 @@ import {
 import { useRouter } from "expo-router";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
+import { getAppContext } from "@/src/storage/appContext";
+import { fetchMe } from "@/lib/me";
+import { useFocusEffect } from "expo-router";
+
 
 /**
  * Expo Camera typing differs across versions. This shim avoids TS errors
@@ -32,6 +36,33 @@ export default function ScanScreen() {
   const [torch, setTorch] = useState<"off" | "on">("off");
   const [busy, setBusy] = useState(false);
   const [previewUri, setPreviewUri] = useState<string | null>(null);
+
+  useFocusEffect(
+    useCallback(() => {
+      let alive = true;
+  
+      (async () => {
+        const ctx = await getAppContext();
+        if (!alive) return;
+  
+        // Force backend profile to match selected context
+        const force =
+          ctx.segment === "family"
+            ? "family"
+            : "individual"; // workplace -> individual until backend supports it
+  
+        await fetchMe(force).catch(() => {});
+      })();
+  
+      return () => {
+        alive = false;
+      };
+    }, [])
+  );
+  
+
+
+
 
   // Ask for camera permission once on load (only if it can ask again)
   useEffect(() => {

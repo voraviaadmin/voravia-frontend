@@ -7,7 +7,7 @@ import { listUsers, UserProfile } from "@/src/storage/users";
 import { getAppContext } from "@/src/storage/appContext";
 import { Theme } from "@/src/ui/theme";
 
-const API_BASE = process.env.EXPO_PUBLIC_API_BASE || "http://localhost:8787";
+import { API_BASE } from "../../lib/api";
 
 type GroupUsageResp = {
   mode: "individual" | "family" | "workplace" | null;
@@ -16,12 +16,8 @@ type GroupUsageResp = {
   provider: "all" | "google" | "openai";
   totalCostUsd: number;
   bySubjectUserId: Record<string, number>;
-  byService: { provider: string; service: string; costUsd: number; events: number }[];
-};
-
-type UsageEventsResp = {
-  count?: number;
-  lastN?: Array<{
+  byService: { provider: string; service: string; costUsd: number }[];
+  items?: Array<{
     ts?: string;
     billingOwnerId?: string;
     provider?: string;
@@ -40,23 +36,29 @@ function moneyTight(x: number) {
   return `$${n.toFixed(2)}`;
 }
 
-function isoDayUtc(d: Date) {
-  return d.toISOString().slice(0, 10);
+function localIdToBackendId(id: string) {
+  if (id?.startsWith("u_")) return id;
+  if (id === "head") return "u_head";
+  if (id === "spouse") return "u_spouse";
+  if (id === "child1") return "u_child1";
+  if (id === "child2") return "u_child2";
+  return "u_head";
 }
 
 export default function UsageScreen() {
   const insets = useSafeAreaInsets();
 
-  const [days, setDays] = useState<7 | 30>(30);
+  const [days, setDays] = useState(30);
   const [provider, setProvider] = useState<"all" | "google" | "openai">("all");
 
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const [data, setData] = useState<GroupUsageResp | null>(null);
 
-  const [todayCostUsd, setTodayCostUsd] = useState<number>(0);
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [memberNameById, setMemberNameById] = useState<Record<string, string>>({});
+  const [usage, setUsage] = useState<GroupUsageResp | null>(null);
+
+  const [segment, setSegment] = useState<"individual" | "family" | "workplace">("individual");
 
   useFocusEffect(
     React.useCallback(() => {
@@ -67,25 +69,34 @@ export default function UsageScreen() {
           setLoading(true);
           setErr(null);
 
+          // Users (local store, for display names)
           const u = await listUsers();
           if (!cancelled) setUsers(u);
 
-          const ctx = getAppContext() as any;
-          const userId = String(ctx?.simulateUserId || ctx?.userId || "u_head");
+          // ✅ FIX: await getAppContext
+          const ctx = await getAppContext();
+          const seg = String((ctx as any)?.segment || "individual") as any;
+          if (!cancelled) setSegment(seg);
 
+          const localUserId = String((ctx as any)?.currentUserId || "head");
+          const backendUserId = localIdToBackendId(localUserId);
+
+          // Me (backend)
           const meResp = await fetch(`${API_BASE}/v1/me`, {
-            headers: { "x-user-id": userId },
+            headers: { "x-user-id": backendUserId },
           });
-          const me = await meResp.json();
+          const me = await meResp.json().catch(() => ({}));
 
+          // Member name map from backend family list if present
           const nameMap: Record<string, string> = {};
           const members = me?.family?.members || [];
           for (const m of members) {
-            if (m?.id) nameMap[String(m.id)] = String(m.displayName || m.id);
+            if (m?.id) nameMap[String(m.id)] = String(m.name || m.displayName || m.id);
           }
           if (!cancelled) setMemberNameById(nameMap);
 
-          const billingOwnerId = String(me?.userId || userId);
+          // Billing owner: backend uses userId (u_head etc)
+          const billingOwnerId = String(me?.userId || backendUserId);
 
           const usageResp = await fetch(
             `${API_BASE}/v1/group-usage?days=${days}&provider=${encodeURIComponent(
@@ -96,38 +107,16 @@ export default function UsageScreen() {
 
           if (!usageResp.ok) {
             const txt = await usageResp.text();
-            throw new Error(txt || `HTTP_${usageResp.status}`);
+            throw new Error(txt || `HTTP ${usageResp.status}`);
           }
 
-          const usageJson = (await usageResp.json()) as GroupUsageResp;
-          if (!cancelled) setData(usageJson);
-
-          const qs = new URLSearchParams();
-          qs.set("limit", "500");
-          if (provider !== "all") qs.set("provider", provider);
-
-          const evResp = await fetch(`${API_BASE}/v1/usage?${qs.toString()}`, {
-            headers: { "x-user-id": billingOwnerId },
-          });
-
-          let todaySum = 0;
-          if (evResp.ok) {
-            const evJson = (await evResp.json()) as UsageEventsResp;
-            const today = isoDayUtc(new Date());
-            const events = Array.isArray(evJson?.lastN) ? evJson.lastN : [];
-
-            for (const e of events) {
-              const ts = String(e?.ts || "");
-              if (!ts) continue;
-              if (ts.slice(0, 10) !== today) continue;
-              if (String(e?.billingOwnerId || "") !== String(billingOwnerId)) continue;
-              todaySum += Number(e?.costUsd) || 0;
-            }
-          }
-
-          if (!cancelled) setTodayCostUsd(todaySum);
+          const usageJson = (await usageResp.json().catch(() => ({}))) as GroupUsageResp;
+          if (!cancelled) setUsage(usageJson);
         } catch (e: any) {
-          if (!cancelled) setErr(String(e?.message || e));
+          if (!cancelled) {
+            setErr(e?.message || "Failed to load usage");
+            setUsage(null);
+          }
         } finally {
           if (!cancelled) setLoading(false);
         }
@@ -139,117 +128,141 @@ export default function UsageScreen() {
     }, [days, provider])
   );
 
-  const nameById = useMemo(() => {
-    const m: Record<string, string> = {};
-    for (const u of users) m[u.id] = u.name || u.id;
-
-    m["u_head"] = m["u_head"] || "Head";
-    m["u_spouse"] = m["u_spouse"] || "Spouse";
-    m["u_child1"] = m["u_child1"] || "Child 1";
-    m["u_child2"] = m["u_child2"] || "Child 2";
-    m["u_self"] = m["u_self"] || "You";
-
-    for (const [id, label] of Object.entries(memberNameById)) m[id] = label;
-    return m;
-  }, [users, memberNameById]);
+  const total = usage?.totalCostUsd ?? 0;
 
   const byMemberRows = useMemo(() => {
-    const map = data?.bySubjectUserId || {};
-    return Object.entries(map)
-      .map(([id, cost]) => {
-        const raw = nameById[id];
-        const name =
-          raw && raw !== id
-            ? raw
-            : id === "u_self"
-              ? "You"
-              : id.startsWith("u_")
-                ? "Member"
-                : "Member";
-        return { id, name, cost: Number(cost) || 0 };
-      })
-      .sort((a, b) => b.cost - a.cost);
-  }, [data, nameById]);
+    const map = usage?.bySubjectUserId || {};
+    const entries = Object.entries(map)
+      .map(([id, cost]) => ({ id, cost }))
+      .sort((a, b) => (b.cost || 0) - (a.cost || 0));
+    return entries;
+  }, [usage]);
+
+  const byServiceRows = useMemo(() => {
+    const rows = Array.isArray(usage?.byService) ? usage!.byService : [];
+    return [...rows].sort((a, b) => (b.costUsd || 0) - (a.costUsd || 0));
+  }, [usage]);
+
+  const canShowSpend = segment === "individual" || segment === "family";
 
   return (
-    <SafeAreaView style={styles.page} edges={["top"]}>
+    <SafeAreaView style={styles.safe} edges={["top"]}>
       <ScrollView
-        style={styles.page}
-        contentContainerStyle={{
-          paddingTop: 12,
-          paddingBottom: 24 + insets.bottom,
-          paddingHorizontal: 16,
-          gap: 12,
-        }}
+        style={styles.safe}
+        contentContainerStyle={{ paddingBottom: 16 + insets.bottom }}
       >
-        <View style={styles.headerRow}>
-          <Text style={styles.h1}>Usage</Text>
+        <View style={styles.topRow}>
+          <Text style={styles.title}>Usage</Text>
           <Pressable onPress={() => router.back()}>
             <Text style={styles.done}>Done</Text>
           </Pressable>
         </View>
 
-        <View style={styles.pillsRow}>
-          <Pill label="7d" active={days === 7} onPress={() => setDays(7)} />
-          <Pill label="30d" active={days === 30} onPress={() => setDays(30)} />
+        <View style={styles.filters}>
+          <Pressable onPress={() => setDays(7)} style={[styles.pill, days === 7 && styles.pillOn]}>
+            <Text style={[styles.pillText, days === 7 && styles.pillTextOn]}>7d</Text>
+          </Pressable>
+          <Pressable onPress={() => setDays(30)} style={[styles.pill, days === 30 && styles.pillOn]}>
+            <Text style={[styles.pillText, days === 30 && styles.pillTextOn]}>30d</Text>
+          </Pressable>
+
           <View style={{ width: 10 }} />
-          <Pill label="All" active={provider === "all"} onPress={() => setProvider("all")} />
-          <Pill label="Google" active={provider === "google"} onPress={() => setProvider("google")} />
-          <Pill label="AI" active={provider === "openai"} onPress={() => setProvider("openai")} />
+
+          <Pressable
+            onPress={() => setProvider("all")}
+            style={[styles.pill, provider === "all" && styles.pillOn]}
+          >
+            <Text style={[styles.pillText, provider === "all" && styles.pillTextOn]}>All</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setProvider("google")}
+            style={[styles.pill, provider === "google" && styles.pillOn]}
+          >
+            <Text style={[styles.pillText, provider === "google" && styles.pillTextOn]}>Google</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setProvider("openai")}
+            style={[styles.pill, provider === "openai" && styles.pillOn]}
+          >
+            <Text style={[styles.pillText, provider === "openai" && styles.pillTextOn]}>AI</Text>
+          </Pressable>
         </View>
 
-        <Card>
-          <Text style={styles.muted}>This period</Text>
-          <Text style={styles.big}>{money(data?.totalCostUsd ?? 0)}</Text>
-          <Text style={styles.mutedSmall}>Includes today so far · Updates daily</Text>
-
-          <View style={{ marginTop: 10 }}>
-            <View style={{ height: 1, backgroundColor: stylesVars.border, marginVertical: 10 }} />
-            <Row left="Today so far" right={moneyTight(todayCostUsd ?? 0)} />
-          </View>
-        </Card>
-
         {loading ? (
-          <Card>
-            <View style={{ paddingVertical: 10, alignItems: "center" }}>
-              <ActivityIndicator />
-              <Text style={styles.mutedSmall}>Loading usage…</Text>
-            </View>
-          </Card>
+          <View style={styles.center}>
+            <ActivityIndicator />
+            <Text style={styles.muted}>Loading…</Text>
+          </View>
         ) : err ? (
-          <Card>
-            <Text style={styles.errTitle}>Couldn’t load usage</Text>
-            <Text style={styles.mutedSmall}>{err}</Text>
-          </Card>
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Couldn’t load</Text>
+            <Text style={styles.muted}>{err}</Text>
+          </View>
+        ) : !canShowSpend ? (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Spend</Text>
+            <Text style={styles.muted}>
+              Spend is available for Individual and Family only.
+            </Text>
+          </View>
         ) : (
           <>
-            <Card>
-              <Text style={styles.sectionTitle}>By member</Text>
-              <View style={{ marginTop: 10, gap: 10 }}>
-                {byMemberRows.length === 0 ? (
-                  <Text style={styles.mutedSmall}>No usage yet.</Text>
-                ) : (
-                  byMemberRows.map((r) => <Row key={r.id} left={r.name} right={moneyTight(r.cost)} />)
-                )}
-              </View>
-            </Card>
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>This period</Text>
+              <Text style={styles.money}>{money(total)}</Text>
+              <Text style={styles.mutedSmall}>Includes today so far • Updates daily</Text>
+            </View>
 
-            <Card>
-              <Text style={styles.sectionTitle}>By service</Text>
-              <View style={{ marginTop: 10, gap: 10 }}>
-                {(data?.byService || []).length === 0 ? (
-                  <Text style={styles.mutedSmall}>No usage yet.</Text>
-                ) : (
-                  data!.byService.map((s) => (
-                    <Row
-                      key={`${s.provider}:${s.service}`}
-                      left={`${s.provider} · ${s.service}`}
-                      right={moneyTight(s.costUsd)}
-                    />
-                  ))
-                )}
+            {/* Today so far (if backend includes it in items; otherwise keep existing line) */}
+            <View style={styles.card}>
+              <View style={styles.rowBetween}>
+                <Text style={styles.cardTitle}>Today so far</Text>
+                <Text style={styles.moneySmall}>
+                  {moneyTight(
+                    (usage?.items || [])
+                      .filter((x) => String(x?.ts || "").startsWith(new Date().toISOString().slice(0, 10)))
+                      .reduce((acc, x) => acc + (Number(x?.costUsd) || 0), 0)
+                  )}
+                </Text>
               </View>
-            </Card>
+            </View>
+
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>By member</Text>
+              <View style={{ marginTop: 10 }}>
+                {byMemberRows.map((r) => {
+                  
+                  const pretty =
+                    memberNameById[r.id] ||
+                    (users.find((u) => String((u as any).id) === r.id) as any)?.displayName ||
+                    r.id;
+
+                  
+                    return (
+                    <View key={r.id} style={styles.rowBetween}>
+                      <Text style={styles.rowLabel}>{pretty}</Text>
+                      <Text style={styles.rowValue}>{moneyTight(r.cost)}</Text>
+                    </View>
+                  );
+                })}
+                {byMemberRows.length === 0 ? <Text style={styles.mutedSmall}>—</Text> : null}
+              </View>
+            </View>
+
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>By service</Text>
+              <View style={{ marginTop: 10 }}>
+                {byServiceRows.map((r, idx) => (
+                  <View key={`${r.provider}-${r.service}-${idx}`} style={styles.rowBetween}>
+                    <Text style={styles.rowLabel}>
+                      {r.provider} • {r.service}
+                    </Text>
+                    <Text style={styles.rowValue}>{moneyTight(r.costUsd)}</Text>
+                  </View>
+                ))}
+                {byServiceRows.length === 0 ? <Text style={styles.mutedSmall}>—</Text> : null}
+              </View>
+            </View>
           </>
         )}
       </ScrollView>
@@ -257,76 +270,59 @@ export default function UsageScreen() {
   );
 }
 
-function Card({ children }: { children: React.ReactNode }) {
-  return <View style={styles.card}>{children}</View>;
-}
-
-function Pill({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
-  return (
-    <Pressable onPress={onPress} style={[styles.pill, active ? styles.pillActive : styles.pillInactive]}>
-      <Text style={[styles.pillText, active ? styles.pillTextActive : styles.pillTextInactive]}>
-        {label}
-      </Text>
-    </Pressable>
-  );
-}
-
-function Row({ left, right }: { left: string; right: string }) {
-  return (
-    <View style={styles.row}>
-      <Text style={styles.rowLeft} numberOfLines={1}>
-        {left}
-      </Text>
-      <Text style={styles.rowRight}>{right}</Text>
-    </View>
-  );
-}
-
-const stylesVars = {
-  bg: (Theme as any)?.colors?.bg || "#F3F4F6",
-  card: (Theme as any)?.colors?.card || "#FFFFFF",
-  text: (Theme as any)?.colors?.textPrimary || "#111827",
-  muted: (Theme as any)?.colors?.textMuted || "#6B7280",
-  brand: (Theme as any)?.colors?.brand || "#0F766E",
-  border: (Theme as any)?.colors?.border || "#E5E7EB",
-};
+const C = (Theme as any)?.colors ?? {};
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: stylesVars.bg },
+  safe: { flex: 1, backgroundColor: C.bg ?? "#F3F6F7" },
 
-  headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  h1: { fontSize: 26, fontWeight: "800", color: stylesVars.text },
-  done: { fontSize: 16, fontWeight: "700", color: stylesVars.brand },
-
-  pillsRow: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
-  pill: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "rgba(15,118,110,0.35)",
+  topRow: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
-  pillActive: { backgroundColor: stylesVars.brand },
-  pillInactive: { backgroundColor: "transparent" },
-  pillText: { fontWeight: "700" },
-  pillTextActive: { color: "white" },
-  pillTextInactive: { color: stylesVars.brand },
+  title: { fontSize: 22, fontWeight: "900", color: C.text ?? "#0B1B1D" },
+  done: { fontWeight: "900", color: C.teal ?? "#0F766E" },
+
+  filters: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    alignItems: "center",
+  },
+  pill: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(15,118,110,0.10)",
+  },
+  pillOn: { backgroundColor: C.teal ?? "#0F766E" },
+  pillText: { fontWeight: "900", color: C.teal ?? "#0F766E" },
+  pillTextOn: { color: "#fff" },
+
+  center: { alignItems: "center", justifyContent: "center", paddingTop: 40, gap: 10 },
+  muted: { fontWeight: "700", color: "rgba(11,27,29,0.55)" },
+  mutedSmall: { marginTop: 6, fontWeight: "700", color: "rgba(11,27,29,0.55)" },
 
   card: {
-    backgroundColor: stylesVars.card,
-    borderRadius: 16,
+    marginHorizontal: 16,
+    marginTop: 10,
+    backgroundColor: "#fff",
+    borderRadius: 18,
     padding: 14,
     borderWidth: 1,
-    borderColor: stylesVars.border,
+    borderColor: "rgba(0,0,0,0.06)",
   },
-  muted: { fontSize: 13, color: stylesVars.muted, fontWeight: "700" },
-  mutedSmall: { marginTop: 6, fontSize: 13, color: stylesVars.muted },
-  big: { marginTop: 6, fontSize: 40, fontWeight: "900", color: stylesVars.brand },
+  cardTitle: { fontWeight: "900", color: "rgba(11,27,29,0.75)" },
 
-  sectionTitle: { fontSize: 16, fontWeight: "800", color: stylesVars.text },
-  errTitle: { fontSize: 16, fontWeight: "800", color: "#991B1B" },
+  money: { marginTop: 8, fontSize: 28, fontWeight: "900", color: C.text ?? "#0B1B1D" },
+  moneySmall: { fontSize: 16, fontWeight: "900", color: C.text ?? "#0B1B1D" },
 
-  row: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  rowLeft: { flex: 1, paddingRight: 10, fontSize: 15, fontWeight: "700", color: stylesVars.text },
-  rowRight: { fontSize: 15, fontWeight: "800", color: stylesVars.brand },
+  rowBetween: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 6 },
+  rowLabel: { fontWeight: "800", color: "rgba(11,27,29,0.85)", flex: 1, paddingRight: 12 },
+  rowValue: { fontWeight: "900", color: "rgba(11,27,29,0.85)" },
 });

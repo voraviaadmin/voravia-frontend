@@ -1,9 +1,14 @@
 import React, { useCallback, useState } from "react";
 import { View, Text, TextInput, Pressable, StyleSheet } from "react-native";
-import { useFocusEffect, router } from "expo-router";
+import { useFocusEffect, router, Stack } from "expo-router";
 
 import { getAppContext } from "@/src/storage/appContext";
 import { getUserById, upsertUser } from "@/src/storage/users";
+
+import { Screen } from "@/src/ui/Screen";
+import { headerStyles } from "@/src/ui/headerStyle";
+import { Theme } from "@/src/ui/theme";
+import { S } from "@/src/ui/spacing";
 
 function normalize(input: string) {
   return input.trim().toUpperCase();
@@ -60,11 +65,12 @@ export default function JoinWorkplaceScreen() {
   }, [code, currentUserId]);
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Join Workplace</Text>
+    <Screen scroll style={{ backgroundColor: Theme.colors.bg }}>
+      <Stack.Screen options={{ ...headerStyles.base, title: "Join workplace" }} />
 
       <View style={styles.card}>
-        <Text style={styles.cardSub}>Paste the corporate code you received.</Text>
+        <Text style={styles.title}>Join workplace</Text>
+        <Text style={styles.sub}>Paste the corporate code you received.</Text>
 
         <Text style={styles.label}>Corporate code</Text>
         <TextInput
@@ -73,52 +79,79 @@ export default function JoinWorkplaceScreen() {
           placeholder="e.g., CORP-ACME"
           autoCapitalize="characters"
           style={styles.input}
+          editable={!saving}
+          placeholderTextColor={Theme.colors.textMuted}
         />
 
         {err ? <Text style={styles.error}>{err}</Text> : null}
 
         <View style={styles.row}>
-          <Pressable style={styles.primaryBtn} onPress={onJoin} disabled={saving}>
-            <Text style={styles.primaryBtnText}>{saving ? "Joining..." : "Join"}</Text>
+          <Pressable style={[styles.primaryBtn, saving && styles.disabled]} onPress={onJoin} disabled={saving}>
+            <Text style={styles.primaryBtnText}>{saving ? "Joining…" : "Join"}</Text>
           </Pressable>
 
-          <Pressable style={styles.ghostBtn} onPress={() => router.back()}>
+          <Pressable style={[styles.ghostBtn, saving && styles.disabled]} onPress={() => router.back()} disabled={saving}>
             <Text style={styles.ghostBtnText}>Cancel</Text>
           </Pressable>
         </View>
 
-        <Text style={styles.hint}>
-          This updates your local profile (corporateId). Later validated server-side.
-        </Text>
+        <Text style={styles.hint}>This updates your local profile (corporateId). Later validated server-side.</Text>
       </View>
-    </View>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16, backgroundColor: "#f6f7fb" },
-  title: { fontSize: 22, fontWeight: "900", marginBottom: 12 },
-  card: { padding: 14, borderRadius: 14, backgroundColor: "rgba(0,0,0,0.04)" },
-  cardSub: { opacity: 0.7 },
-
-  label: { marginTop: 12, fontWeight: "900", opacity: 0.8 },
-  input: {
-    marginTop: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    backgroundColor: "white",
+  card: {
+    backgroundColor: Theme.colors.card,
+    borderRadius: Theme.radius.lg,
     borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.10)",
+    borderColor: Theme.colors.divider,
+    padding: S.lg,
+    gap: S.md,
   },
 
-  error: { marginTop: 10, color: "#b42318", fontWeight: "800" },
+  title: { fontSize: Theme.font.h2, fontWeight: "900", color: Theme.colors.textPrimary },
+  sub: { color: Theme.colors.textMuted, fontWeight: "700" },
 
-  row: { marginTop: 12, flexDirection: "row", gap: 12, alignItems: "center" },
-  primaryBtn: { backgroundColor: "#0f766e", paddingVertical: 10, paddingHorizontal: 14, borderRadius: 12 },
+  label: { marginTop: S.sm, fontWeight: "900", color: Theme.colors.textPrimary },
+
+  input: {
+    marginTop: S.sm,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: Theme.radius.lg,
+    backgroundColor: Theme.colors.card,
+    borderWidth: 1,
+    borderColor: Theme.colors.chipBorder,
+    color: Theme.colors.textPrimary,
+    fontWeight: "800",
+  },
+
+  error: { marginTop: S.sm, color: "#b42318", fontWeight: "800" },
+
+  row: { flexDirection: "row", gap: S.md, alignItems: "center", marginTop: S.sm },
+
+  primaryBtn: {
+    flex: 1,
+    backgroundColor: Theme.colors.teal,
+    paddingVertical: 14,
+    borderRadius: Theme.radius.lg,
+    alignItems: "center",
+  },
   primaryBtnText: { color: "white", fontWeight: "900" },
-  ghostBtn: { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 12, backgroundColor: "rgba(0,0,0,0.06)" },
-  ghostBtnText: { fontWeight: "900", color: "rgba(0,0,0,0.75)" },
 
-  hint: { marginTop: 10, opacity: 0.6 },
+  ghostBtn: {
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: Theme.radius.lg,
+    backgroundColor: Theme.colors.card,
+    borderWidth: 1,
+    borderColor: Theme.colors.divider,
+    alignItems: "center",
+  },
+  ghostBtnText: { fontWeight: "900", color: Theme.colors.textPrimary },
+
+  hint: { color: Theme.colors.textMuted, fontWeight: "700" },
+  disabled: { opacity: 0.6 },
 });

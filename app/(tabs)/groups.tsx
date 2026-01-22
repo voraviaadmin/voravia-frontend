@@ -1,22 +1,50 @@
-import React, { useCallback, useMemo, useState } from "react";
-import { View, Text, Pressable, StyleSheet, FlatList, ActivityIndicator } from "react-native";
+import React, { useCallback, useMemo, useRef, useState, useEffect } from "react";
+import {
+  View,
+  Text,
+  Pressable,
+  StyleSheet,
+  FlatList,
+  ActivityIndicator,
+  TextInput,
+} from "react-native";
 import { router, useFocusEffect } from "expo-router";
 
 import { listGroups, Group } from "@/src/storage/groups";
 import { getAppContext, setAppContext } from "@/src/storage/appContext";
-import { listUsers, seedDemoHousehold, UserProfile } from "@/src/storage/users";
 import { patchMe } from "@/src/hooks/useMe";
 import { Theme } from "@/src/ui/theme";
-
 import type { ContextScope } from "@/src/context/contextRules";
-import { clampContext, getContextEligibility, getAvailableContexts } from "@/src/context/contextRules";
+import { Screen } from "@/src/ui/Screen";
+import { S } from "@/src/ui/spacing";
 
-import { getApiBaseUrl } from "../../lib/me";
+import { API_BASE } from "../../lib/api";
+import { Ionicons } from "@expo/vector-icons";
+
+
+// Backwards-compatible helper (older screens still call this)
+export function getApiBaseUrl() {
+  return API_BASE;
+}
+
+// =======================
+// DEV FLAG: Simulate chips
+// =======================
+const ENABLE_SIMULATE_CHIPS = false; // <-- set true if you want them in dev
 
 type ScoreMode = "avg14d" | "today";
 
-type DaySummary = { dailyScore?: number };
-type LogsResp = { items?: Array<{ createdAt?: string; day?: string; score?: number }> };
+// Backend family member shape (MVP)
+type ApiFamilyMember = {
+  id: string;
+  familyId?: string;
+  name?: string;
+  memberType?: "individual" | "parent" | "child";
+  insuranceId?: string | null;
+  corporateId?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+};
 
 function clampScore(n: number) {
   const x = Number(n);
@@ -24,59 +52,10 @@ function clampScore(n: number) {
   return Math.max(0, Math.min(100, Math.round(x)));
 }
 
-function isoDay(d: Date) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-function subtractDays(d: Date, days: number) {
-  const x = new Date(d);
-  x.setDate(x.getDate() - days);
-  return x;
-}
-
-/**
- * Avg daily score from logs:
- * - group scored meals by day
- * - avg meals per day
- * - avg across last N days that have any scored meals
- */
-function computeAvgScoreFromLogs(items: Array<{ createdAt?: string; day?: string; score?: number }>, days = 14): number | null {
-  const today = new Date();
-  const start = subtractDays(today, days - 1);
-
-  const dayToScores = new Map<string, number[]>();
-
-  for (const it of items) {
-    const createdAt = it.createdAt ? new Date(it.createdAt) : null;
-    if (!createdAt || Number.isNaN(createdAt.getTime())) continue;
-    if (createdAt < start) continue;
-
-    const s = Number(it.score);
-    if (!Number.isFinite(s)) continue;
-
-    const key = it.day ? String(it.day) : isoDay(createdAt);
-    const arr = dayToScores.get(key) || [];
-    arr.push(s);
-    dayToScores.set(key, arr);
-  }
-
-  const perDay: number[] = [];
-  for (const arr of dayToScores.values()) {
-    if (!arr.length) continue;
-    const sum = arr.reduce((a, b) => a + b, 0);
-    perDay.push(sum / arr.length);
-  }
-
-  if (!perDay.length) return null;
-  const avg = perDay.reduce((a, b) => a + b, 0) / perDay.length;
-  return clampScore(avg);
-}
-
 function mean(nums: Array<number | null | undefined>) {
-  const vals = nums.filter((n): n is number => typeof n === "number" && Number.isFinite(n));
+  const vals = nums.filter(
+    (n): n is number => typeof n === "number" && Number.isFinite(n)
+  );
   if (!vals.length) return 0;
   const s = vals.reduce((a, b) => a + b, 0);
   return clampScore(s / vals.length);
@@ -88,11 +67,7 @@ function scopeLabel(s: ContextScope) {
   return "Workplace";
 }
 
-function countBy(users: UserProfile[], key: "familyId" | "insuranceId" | "corporateId", value?: string) {
-  if (!value) return 0;
-  return users.filter((u) => u[key] === value).length;
-}
-
+// Existing MVP identity mapping (keep, no behavior changes)
 function localIdToBackendId(id: string) {
   return id === "head"
     ? "u_head"
@@ -127,14 +102,14 @@ function SectionRow({
 
 const sectionRowStyles = StyleSheet.create({
   card: {
-    backgroundColor: "white",
-    borderRadius: 16,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
+    backgroundColor: Theme.colors.card,
+    borderRadius: Theme.radius.lg,
+    paddingVertical: S.md,
+    paddingHorizontal: S.lg,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginTop: 12,
+    marginTop: S.md,
   },
   title: { fontSize: 16, fontWeight: "800", color: "#111827" },
   subtitle: { marginTop: 2, fontSize: 13, color: "#6B7280" },
@@ -177,7 +152,9 @@ function ScoreCard({
         ) : (
           <>
             <Text style={scoreCardStyles.score}>{score}</Text>
-            <Text style={scoreCardStyles.scoreLabel}>{mode === "avg14d" ? "Avg (14d)" : "Today"}</Text>
+            <Text style={scoreCardStyles.scoreLabel}>
+              {mode === "avg14d" ? "Avg (14d)" : "Today"}
+            </Text>
           </>
         )}
       </Pressable>
@@ -187,599 +164,1098 @@ function ScoreCard({
 
 const scoreCardStyles = StyleSheet.create({
   card: {
-    backgroundColor: "white",
-    borderRadius: 16,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
+    backgroundColor: Theme.colors.card,
+    borderRadius: Theme.radius.lg,
+    paddingVertical: S.md,
+    paddingHorizontal: S.lg,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginTop: 12,
+    marginTop: S.md,
   },
-  title: { fontSize: 18, fontWeight: "900", color: "#111827" },
-  subtitle: { marginTop: 4, fontSize: 13, color: "#6B7280" },
+  title: { fontSize: Theme.font.h2, fontWeight: "900", color: "#111827" },
+  subtitle: { marginTop: 4, fontSize: 13, color: Theme.colors.textMuted },
   meta: { marginTop: 8, fontSize: 14, fontWeight: "900", color: "#0f766e" },
 
   scoreBox: { minWidth: 84, alignItems: "flex-end", justifyContent: "center" },
-  score: { fontSize: 44, fontWeight: "900", color: "#0f766e", lineHeight: 48 },
-  scoreLabel: { marginTop: 2, fontSize: 12, fontWeight: "800", color: "rgba(0,0,0,0.55)" },
+  score: { fontSize: 32, fontWeight: "900", color: "#0f766e", lineHeight: 48 },
+  scoreLabel: {
+    marginTop: 2,
+    fontSize: 12,
+    fontWeight: "800",
+    color: "rgba(0,0,0,0.55)",
+  },
 });
+
+function memberTypeLabel(t?: ApiFamilyMember["memberType"]) {
+  if (t === "parent") return "Parent";
+  if (t === "child") return "Child";
+  return "Individual";
+}
+function nextMemberType(t?: ApiFamilyMember["memberType"]): ApiFamilyMember["memberType"] {
+  if (t === "parent") return "child";
+  if (t === "child") return "individual";
+  return "parent";
+}
 
 export default function GroupsScreen() {
   const [segment, setSegment] = useState<ContextScope>("individual");
   const [savedGroups, setSavedGroups] = useState<Group[]>([]);
-  const [users, setUsers] = useState<UserProfile[]>([]);
   const [currentUserId, setCurrentUserId] = useState<string>("head");
+
   const [membersExpanded, setMembersExpanded] = useState(true);
 
-  // Toggle per card (keeps card size unchanged; only value/label switches)
+  // Scores
   const [modeByCard, setModeByCard] = useState<Record<string, ScoreMode>>({
     you: "avg14d",
     family: "avg14d",
     insurance: "avg14d",
     workplace: "avg14d",
   });
-
-  // Score caches keyed by backend member id
-  const [todayByBackendId, setTodayByBackendId] = useState<Record<string, number>>({});
-  const [avg14dByBackendId, setAvg14dByBackendId] = useState<Record<string, number>>({});
+  const modeRef = useRef(modeByCard);
   const [loadingScores, setLoadingScores] = useState(false);
+  const [scoresByKey, setScoresByKey] = useState<Record<string, number>>({
+    you: 0,
+    family: 0,
+    insurance: 0,
+    workplace: 0,
+  });
 
-  useFocusEffect(
-    useCallback(() => {
-      let alive = true;
+  // Family members (API)
+  const [apiFamilyMembers, setApiFamilyMembers] = useState<ApiFamilyMember[]>([]);
+  const [loadingMembers, setLoadingMembers] = useState(false);
 
-      (async () => {
-        const ctx = await getAppContext();
-        const gs = await listGroups();
-        const us = await listUsers();
+  // /v1/me (active member + mode)
+  const [me, setMe] = useState<any>(null);
 
-        if (!alive) return;
-
-        const hasFamilyGroup = gs.some((g) => g.type === "Family");
-        const resolvedUserId = ctx.currentUserId ?? "head";
-        const resolvedMe = us.find((u) => u.id === resolvedUserId) ?? null;
-
-        const desired = (ctx.segment ?? "individual") as ContextScope;
-        const clamped = clampContext(desired, resolvedMe, { hasFamilyGroup });
-
-        if (clamped !== desired) {
-          await setAppContext({ segment: clamped, currentUserId: resolvedUserId });
-        }
-
-        setSavedGroups(gs);
-        setUsers(us);
-        setCurrentUserId(resolvedUserId);
-        setSegment(clamped);
-      })();
-
-      return () => {
-        alive = false;
-      };
-    }, [])
-  );
-
-  const me = useMemo(() => users.find((u) => u.id === currentUserId) ?? null, [users, currentUserId]);
-
-  const familyGroups = useMemo(() => savedGroups.filter((g) => g.type === "Family"), [savedGroups]);
-  const familyGroup = useMemo(() => familyGroups[0] ?? null, [familyGroups]);
-  const hasFamilyGroup = useMemo(() => savedGroups.some((g) => g.type === "Family"), [savedGroups]);
-
-  const activeFamilyId = useMemo(() => {
-    if (me?.familyId) return me.familyId;
-    return familyGroup?.id ?? "";
-  }, [me?.familyId, familyGroup?.id]);
-
-  const familyMembers = useMemo(() => {
-    if (!activeFamilyId) return [];
-    return users
-      .filter((u) => u.familyId === activeFamilyId)
-      .sort((a, b) => (a.id === "head" ? -1 : b.id === "head" ? 1 : 0));
-  }, [users, activeFamilyId]);
-
-  const eligibility = useMemo(() => getContextEligibility(me, { hasFamilyGroup }), [me, hasFamilyGroup]);
-  const SEGMENTS = useMemo<ContextScope[]>(() => getAvailableContexts(eligibility), [eligibility]);
-
-  useMemo(() => {
-    if (!me) return;
-    const clamped = clampContext(segment, me, { hasFamilyGroup });
-    if (clamped !== segment) {
-      setSegment(clamped);
-      setAppContext({ segment: clamped, currentUserId });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [segment, me?.familyId, me?.corporateId, hasFamilyGroup]);
-
-  const onChangeSegment = useCallback(
-    async (next: ContextScope) => {
-      setSegment(next);
-      await setAppContext({ segment: next, currentUserId });
-      patchMe({ mode: next as any }).catch(() => {});
-    },
-    [currentUserId]
-  );
-
-  const onChangeUser = useCallback(
-    async (nextUserId: string) => {
-      const nextMe = users.find((u) => u.id === nextUserId) ?? null;
-      const clamped = clampContext(segment, nextMe, { hasFamilyGroup });
-
-      setCurrentUserId(nextUserId);
-      setSegment(clamped);
-
-      await setAppContext({ segment: clamped, currentUserId: nextUserId });
-
-      const backendMemberId = localIdToBackendId(nextUserId);
-      patchMe({ mode: "family", family: { activeMemberId: backendMemberId } }).catch(() => {});
-    },
-    [users, segment, hasFamilyGroup]
-  );
-
-  const showCreateFamilyCTA = segment === "family" && familyGroups.length === 0;
-
-  const devSeed = useCallback(async () => {
-    const famId = familyGroup?.id ?? "FAM-1";
-    await seedDemoHousehold(famId);
-    const us = await listUsers();
-    setUsers(us);
-    await onChangeUser("head");
-  }, [familyGroup, onChangeUser]);
-
-  // ---- Score loading (Today + Avg14d) ----
-  const loadScores = useCallback(async () => {
-    if (!me) return;
-
-    const api = getApiBaseUrl();
-    const backendMe = localIdToBackendId(me.id);
-
-    // Individual needs selected member
-    const individualIds = [backendMe];
-
-    // Family needs all family members
-    const familyIds = familyMembers.map((m) => localIdToBackendId(m.id));
-
-    // Insurance needs members matching selected/logged-in user's insurance
-    const myInsuranceId = me.insuranceId;
-    const insuranceIds = familyMembers
-      .filter((m) => !!myInsuranceId && m.insuranceId === myInsuranceId)
-      .map((m) => localIdToBackendId(m.id));
-
-    // Only fetch for ids we don't already have cached (keep it low risk)
-    const want = Array.from(new Set([...individualIds, ...familyIds, ...insuranceIds])).filter(Boolean);
-
-    if (!want.length) return;
-
-    setLoadingScores(true);
-
+  const activeMemberId: string | null = useMemo(() => {
     try {
-      // Fetch Today + Logs in parallel per member
-      const results = await Promise.all(
-        want.map(async (uid) => {
-          const [dayR, logsR] = await Promise.all([
-            fetch(`${api}/v1/day-summary?userId=${encodeURIComponent(uid)}`).catch(() => null),
-            fetch(`${api}/v1/logs?userId=${encodeURIComponent(uid)}`).catch(() => null),
-          ]);
-
-          let today: number | null = null;
-          let avg14: number | null = null;
-
-          try {
-            if (dayR && (dayR as any).ok) {
-              const j = (await (dayR as any).json().catch(() => ({}))) as DaySummary;
-              today = clampScore(Number(j?.dailyScore ?? 0));
-            }
-          } catch {}
-
-          try {
-            if (logsR && (logsR as any).ok) {
-              const j = (await (logsR as any).json().catch(() => ({}))) as LogsResp;
-              const items = Array.isArray(j?.items) ? j.items : [];
-              const avg = computeAvgScoreFromLogs(items, 14);
-              avg14 = avg === null ? null : avg;
-            }
-          } catch {}
-
-          return { uid, today, avg14 };
-        })
-      );
-
-      setTodayByBackendId((prev) => {
-        const next = { ...prev };
-        for (const r of results) {
-          if (typeof r.today === "number") next[r.uid] = r.today;
-        }
-        return next;
-      });
-
-      setAvg14dByBackendId((prev) => {
-        const next = { ...prev };
-        for (const r of results) {
-          if (typeof r.avg14 === "number") next[r.uid] = r.avg14;
-        }
-        return next;
-      });
-    } finally {
-      setLoadingScores(false);
+      const m = me;
+      if (m?.mode === "family") return String(m?.family?.activeMemberId || "") || null;
+      return String(m?.userId || m?.id || "") || null;
+    } catch {
+      return null;
     }
-  }, [me, familyMembers]);
+  }, [me]);
 
-  useFocusEffect(
-    useCallback(() => {
-      loadScores();
-    }, [loadScores])
-  );
+  const [familyCountMeta, setFamilyCountMeta] = useState(0);
+  const [employeesCountMeta, setEmployeesCountMeta] = useState(0);
 
-  // ---- Derived card scores ----
-  const backendMeId = useMemo(() => (me ? localIdToBackendId(me.id) : "u_head"), [me]);
+  const inFlightRef = useRef(false);
+  const didInitialLoadRef = useRef(false);
 
-  const familyBackendIds = useMemo(() => familyMembers.map((m) => localIdToBackendId(m.id)), [familyMembers]);
-  const insuranceBackendIds = useMemo(() => {
-    const myInsuranceId = me?.insuranceId;
-    if (!myInsuranceId) return [];
-    return familyMembers.filter((m) => m.insuranceId === myInsuranceId).map((m) => localIdToBackendId(m.id));
-  }, [me?.insuranceId, familyMembers]);
 
-  const youScore = useMemo(() => {
-    const mode = modeByCard.you ?? "avg14d";
-    return mode === "today"
-      ? todayByBackendId[backendMeId] ?? 0
-      : avg14dByBackendId[backendMeId] ?? todayByBackendId[backendMeId] ?? 0;
-  }, [modeByCard.you, backendMeId, todayByBackendId, avg14dByBackendId]);
-
-  const familyScore = useMemo(() => {
-    const mode = modeByCard.family ?? "avg14d";
-    const vals = (mode === "today" ? familyBackendIds.map((id) => todayByBackendId[id]) : familyBackendIds.map((id) => avg14dByBackendId[id] ?? todayByBackendId[id]));
-    return mean(vals);
-  }, [modeByCard.family, familyBackendIds, todayByBackendId, avg14dByBackendId]);
-
-  const insuranceScore = useMemo(() => {
-    const mode = modeByCard.insurance ?? "avg14d";
-    const vals = (mode === "today"
-      ? insuranceBackendIds.map((id) => todayByBackendId[id])
-      : insuranceBackendIds.map((id) => avg14dByBackendId[id] ?? todayByBackendId[id]));
-    return mean(vals);
-  }, [modeByCard.insurance, insuranceBackendIds, todayByBackendId, avg14dByBackendId]);
-
-  const toggle = useCallback((key: "you" | "family" | "insurance" | "workplace") => {
-    setModeByCard((prev) => {
-      const cur = prev[key] ?? "avg14d";
-      const next: ScoreMode = cur === "avg14d" ? "today" : "avg14d";
-      return { ...prev, [key]: next };
+  // ---------- API helpers ----------
+  const fetchMeApi = useCallback(async (backendMe: string) => {
+    const api = getApiBaseUrl();
+    const meResp = await fetch(`${api}/v1/me`, {
+      method: "GET",
+      headers: { "x-user-id": backendMe },
     });
+    const meJson = await meResp.json().catch(() => ({}));
+    if (meResp.ok) {
+      setMe(meJson);
+      return meJson;
+    }
+    setMe(null);
+    return null;
   }, []);
 
-  // ---- Render cards (same size) ----
-  const cards = useMemo(() => {
-    if (!me) return [];
+  async function fetchFamilyMembersFromApi(userBackendId: string) {
+    const api = getApiBaseUrl();
+    const resp = await fetch(`${api}/v1/family/members`, {
+      method: "GET",
+      headers: { "x-user-id": userBackendId },
+    });
+    const json = await resp.json().catch(() => ({}));
+    const items = Array.isArray(json?.items) ? json.items : [];
+    const mapped: ApiFamilyMember[] = items
+      .filter((m: any) => m && (typeof m.id === "string" || typeof m.id === "number"))
+      .map((m: any) => ({
+        id: String(m.id),
+        familyId: m.familyId ? String(m.familyId) : undefined,
+        name: m.name ? String(m.name) : undefined,
+        memberType: (String(m.memberType || "") as any) || "individual",
+        insuranceId: m.insuranceId ?? null,
+        corporateId: m.corporateId ?? null,
+        createdAt: m.createdAt ? String(m.createdAt) : undefined,
+        updatedAt: m.updatedAt ? String(m.updatedAt) : undefined,
+      }));
+    return mapped;
+  }
 
-    if (segment === "individual") {
-      return [
-        {
-          key: "you" as const,
-          title: "You",
-          subtitle: "Personal health score · current streak",
-          meta: "Improving",
-          score: youScore,
-          mode: modeByCard.you ?? "avg14d",
+  const scoreForUserId = useCallback(
+    async (backendMe: string, uid: string, mode: ScoreMode) => {
+      const api = getApiBaseUrl();
+      const windowDays = mode === "today" ? 1 : 14;
+
+      const r = await fetch(
+        `${api}/v1/day-summary?userId=${encodeURIComponent(uid)}&windowDays=${windowDays}`,
+        { method: "GET", headers: { "x-user-id": backendMe } }
+      );
+      const j = (await r.json().catch(() => ({}))) as any;
+      if (!r.ok) return 0;
+      if (mode === "today") return clampScore(Number(j?.dailyScore ?? 0));
+      return clampScore(Number(j?.avgScore ?? 0));
+    },
+    []
+  );
+
+  const computeAndSetScores = useCallback(
+    async (args: {
+      backendMe: string;
+      seg: ContextScope;
+      meJson: any;
+      members: ApiFamilyMember[];
+    }) => {
+      const { backendMe, seg, meJson, members } = args;
+
+      setLoadingScores(true);
+      try {
+        const isFamilyMode = meJson?.mode === "family";
+        const activeId = isFamilyMode
+          ? String(meJson?.family?.activeMemberId || "") || null
+          : null;
+
+        const youSubjectId = isFamilyMode ? String(activeId || backendMe) : String(backendMe);
+
+        const youScore = await scoreForUserId(backendMe, youSubjectId, modeRef.current.you);
+
+        // If not family segment, keep family/insurance as 0 (UI hides them anyway)
+        let familyScore = 0;
+        let insuranceScore = 0;
+
+        const fm = Array.isArray(members) ? members : [];
+
+        if (seg === "family") {
+          const familyIds = fm.map((m) => String(m.id)).filter(Boolean);
+          familyScore =
+            familyIds.length > 0
+              ? mean(
+                  await Promise.all(
+                    familyIds.map((id) => scoreForUserId(backendMe, id, modeRef.current.family))
+                  )
+                )
+              : 0;
+
+          const activeIns =
+            fm.find((m) => String(m.id) === String(activeId || ""))?.insuranceId ?? null;
+
+          const insuredIds =
+            activeIns
+              ? fm
+                  .filter((m) => String(m.insuranceId || "") === String(activeIns))
+                  .map((m) => String(m.id))
+              : [];
+
+          insuranceScore =
+            insuredIds.length > 0
+              ? mean(
+                  await Promise.all(
+                    insuredIds.map((id) => scoreForUserId(backendMe, id, modeRef.current.insurance))
+                  )
+                )
+              : 0;
+
+          setFamilyCountMeta(fm.length || 0);
+        } else {
+          setFamilyCountMeta(0);
+        }
+
+        // Workplace (shown only in workplace segment)
+        let workplaceScore = 0;
+        let employees = 0;
+        if (seg === "workplace") {
+          const activeCorp =
+            fm.find((m) => String(m.id) === String(activeId || ""))?.corporateId ?? null;
+
+          const corpIds =
+            activeCorp
+              ? fm
+                  .filter((m) => String(m.corporateId || "") === String(activeCorp))
+                  .map((m) => String(m.id))
+              : [];
+
+          employees = corpIds.length || 0;
+
+          workplaceScore =
+            corpIds.length > 0
+              ? mean(
+                  await Promise.all(
+                    corpIds.map((id) => scoreForUserId(backendMe, id, modeRef.current.workplace))
+                  )
+                )
+              : 0;
+        }
+        setEmployeesCountMeta(employees);
+
+        setScoresByKey({
+          you: youScore,
+          family: familyScore,
+          insurance: insuranceScore,
+          workplace: workplaceScore,
+        });
+      } finally {
+        setLoadingScores(false);
+      }
+    },
+    [scoreForUserId]
+  );
+
+  // ---------- Single refresh pipeline (fixes stale segment + loops) ----------
+  const refreshAll = useCallback(async () => {
+    const ctx = await getAppContext();
+    const nextSeg = (ctx.segment || "individual") as ContextScope;
+    const nextUser = ctx.currentUserId || "head";
+
+    setSegment(nextSeg);
+    setCurrentUserId(nextUser);
+
+    const gs = await listGroups();
+    setSavedGroups(gs);
+
+    const backendMe = localIdToBackendId(nextUser);
+    const meJson = await fetchMeApi(backendMe);
+
+    // Only fetch family members if we're in family segment (business behavior unchanged)
+    let members: ApiFamilyMember[] = [];
+    if (nextSeg === "family") {
+      setLoadingMembers(true);
+      try {
+        members = await fetchFamilyMembersFromApi(backendMe);
+        setApiFamilyMembers(members);
+      } finally {
+        setLoadingMembers(false);
+      }
+    } else {
+      setApiFamilyMembers([]);
+    }
+
+    await computeAndSetScores({
+      backendMe,
+      seg: nextSeg,
+      meJson,
+      members,
+    });
+  }, [computeAndSetScores, fetchMeApi]);
+
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+  
+      (async () => {
+        if (inFlightRef.current) return;
+        inFlightRef.current = true;
+  
+        try {
+          await refreshAll();
+        } finally {
+          // ✅ ALWAYS reset, even if screen unfocused mid-flight
+          inFlightRef.current = false;
+        }
+      })();
+  
+      return () => {
+        cancelled = true;
+      };
+    }, [refreshAll])
+  );
+  
+
+  useEffect(() => {
+    // Run once on mount to avoid "0 until tap" on cold start
+    if (didInitialLoadRef.current) return;
+    didInitialLoadRef.current = true;
+  
+    (async () => {
+      if (inFlightRef.current) return;
+      inFlightRef.current = true;
+      try {
+        await refreshAll();
+      } finally {
+        inFlightRef.current = false;
+      }
+    })();
+  }, [refreshAll]);
+  
+
+
+  // Toggle mode + recompute scores (no demo list involved)
+  const toggleMode = useCallback(async (key: string) => {
+    setModeByCard((prev) => {
+      const next = {
+        ...prev,
+        [key]: prev[key] === "avg14d" ? "today" : "avg14d",
+      } as typeof prev;
+  
+      modeRef.current = next;
+      return next;
+    });
+  
+    // If you recompute scores here, keep it after setModeByCard:
+    const backendMe = localIdToBackendId(currentUserId || "head");
+    const ctx = await getAppContext();
+    const seg = (ctx.segment || segment) as ContextScope;
+    const meJson = me;
+  
+    await computeAndSetScores({
+      backendMe,
+      seg,
+      meJson,
+      members: apiFamilyMembers,
+    });
+  }, [apiFamilyMembers, computeAndSetScores, currentUserId, me, segment]);
+
+
+  const hasFamilyGroup = useMemo(() => {
+    const localHas = savedGroups.some((g) => g.type === "Family");
+    const apiHas = apiFamilyMembers.length > 0;
+    return localHas || apiHas;
+  }, [savedGroups, apiFamilyMembers]);
+
+  const insuredCount = useMemo(() => {
+    return apiFamilyMembers.filter((m) => String(m.insuranceId || "").trim()).length;
+  }, [apiFamilyMembers]);
+
+  const availableSegments: ContextScope[] = useMemo(() => {
+    const list: ContextScope[] = ["individual"];
+    if (hasFamilyGroup) list.push("family");
+    list.push("workplace");
+    return list;
+  }, [hasFamilyGroup]);
+
+  const onChangeSegment = useCallback(async (next: ContextScope) => {
+    setSegment(next);
+
+    const ctx = await getAppContext();
+    await setAppContext({ ...ctx, segment: next });
+
+    await patchMe({
+      mode: next === "workplace" ? "individual" : next,
+    }).catch(() => {});
+  }, []);
+
+  const youMeta = useMemo(() => {
+    if (me?.mode === "family") {
+      const active = apiFamilyMembers.find(
+        (m) => String(m.id) === String(activeMemberId || "")
+      );
+      const nm = active?.name || "Member";
+      return `User: ${nm}`;
+    }
+    const nm = String(me?.name || "You");
+    return `User: ${nm}`;
+  }, [me, apiFamilyMembers, activeMemberId]);
+
+  const familySubtitle = "Average across your family";
+  const insuranceSubtitle = "Average across your insurance group";
+  const workplaceSubtitle = "Average across your workplace";
+
+  // ==========================
+  // API Family CRUD (MVP)
+  // ==========================
+  const backendMe = localIdToBackendId(currentUserId || "head");
+
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newType, setNewType] = useState<ApiFamilyMember["memberType"]>("parent");
+  const [memberMsg, setMemberMsg] = useState<string | null>(null);
+
+  const refreshMembersOnly = useCallback(async () => {
+    setMemberMsg(null);
+    setLoadingMembers(true);
+    try {
+      const ms = await fetchFamilyMembersFromApi(backendMe);
+      setApiFamilyMembers(ms);
+      return ms;
+    } catch (e: any) {
+      setApiFamilyMembers([]);
+      setMemberMsg(e?.message ?? "Failed to load family members.");
+      return [];
+    } finally {
+      setLoadingMembers(false);
+    }
+  }, [backendMe]);
+
+  const createMember = useCallback(async () => {
+    setMemberMsg(null);
+    const nm = newName.trim();
+    if (!nm) return setMemberMsg("Name is required.");
+
+    setLoadingMembers(true);
+    try {
+      const api = getApiBaseUrl();
+      const resp = await fetch(`${api}/v1/family/members`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-user-id": backendMe,
         },
-      ];
+        body: JSON.stringify({ name: nm, memberType: newType || "individual" }),
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(json?.error || json?.message || "Failed to add member.");
+
+      setNewName("");
+      setNewType("parent");
+      setAdding(false);
+
+      const ms = await refreshMembersOnly();
+      const meJson = await fetchMeApi(backendMe);
+      await computeAndSetScores({ backendMe, seg: "family", meJson, members: ms });
+    } catch (e: any) {
+      setMemberMsg(e?.message ?? "Failed to add member.");
+    } finally {
+      setLoadingMembers(false);
     }
+  }, [backendMe, computeAndSetScores, fetchMeApi, newName, newType, refreshMembersOnly]);
 
-    if (segment === "family") {
-      const out: Array<any> = [];
-
-      if (activeFamilyId) {
-        const count = countBy(users, "familyId", activeFamilyId);
-        out.push({
-          key: "family" as const,
-          title: familyGroup?.name ?? "Family",
-          subtitle: `${count || 1} members · 5-day streak`,
-          meta: "Improving",
-          score: familyScore,
-          mode: modeByCard.family ?? "avg14d",
+  const updateMember = useCallback(
+    async (id: string, patch: Partial<Pick<ApiFamilyMember, "name" | "memberType">>) => {
+      setMemberMsg(null);
+      setLoadingMembers(true);
+      try {
+        const api = getApiBaseUrl();
+        const resp = await fetch(`${api}/v1/family/members/${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          headers: {
+            "content-type": "application/json",
+            "x-user-id": backendMe,
+          },
+          body: JSON.stringify(patch),
         });
-      }
+        const json = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(json?.error || json?.message || "Failed to update member.");
 
-      if (me.insuranceId) {
-        const insuredCount = familyMembers.filter((u) => u.insuranceId === me.insuranceId).length;
-        out.push({
-          key: "insurance" as const,
-          title: "Insurance",
-          subtitle: `${me.insuranceId} · ${insuredCount || 0} insured member${(insuredCount || 0) === 1 ? "" : "s"}`,
-          meta: "Improving",
-          score: insuranceScore,
-          mode: modeByCard.insurance ?? "avg14d",
+        const ms = await refreshMembersOnly();
+        const meJson = await fetchMeApi(backendMe);
+        await computeAndSetScores({ backendMe, seg: "family", meJson, members: ms });
+      } catch (e: any) {
+        setMemberMsg(e?.message ?? "Failed to update member.");
+      } finally {
+        setLoadingMembers(false);
+      }
+    },
+    [backendMe, computeAndSetScores, fetchMeApi, refreshMembersOnly]
+  );
+
+  const deleteMember = useCallback(
+    async (id: string) => {
+      setMemberMsg(null);
+      setLoadingMembers(true);
+      try {
+        const api = getApiBaseUrl();
+        const resp = await fetch(`${api}/v1/family/members/${encodeURIComponent(id)}`, {
+          method: "DELETE",
+          headers: { "x-user-id": backendMe },
         });
+        const json = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(json?.error || json?.message || "Failed to delete member.");
+
+        const remaining = apiFamilyMembers.filter((m) => m.id !== id);
+
+        // If last member deleted => treat as family deletion => fall back to individual mode
+        if (remaining.length === 0) {
+          const ctx = await getAppContext();
+          await setAppContext({ ...ctx, segment: "individual" });
+
+          setSegment("individual");
+          await patchMe({ mode: "individual" }).catch(() => {});
+          setApiFamilyMembers([]);
+          setScoresByKey((prev) => ({ ...prev, family: 0, insurance: 0 }));
+          return;
+        }
+
+        const ms = await refreshMembersOnly();
+        const meJson = await fetchMeApi(backendMe);
+        await computeAndSetScores({ backendMe, seg: "family", meJson, members: ms });
+      } catch (e: any) {
+        setMemberMsg(e?.message ?? "Failed to delete member.");
+      } finally {
+        setLoadingMembers(false);
       }
+    },
+    [apiFamilyMembers, backendMe, computeAndSetScores, fetchMeApi, refreshMembersOnly]
+  );
 
-      return out;
-    }
+  const renderHeader = () => {
+    return (
+      <View style={{ paddingHorizontal: S.lg, paddingTop: 10 }}>
+        <Text style={styles.h1}>Groups</Text>
 
-    // Workplace (keep as-is / placeholder, but still toggle-able if you want)
-    const corporateId = me.corporateId;
-    if (!corporateId) return [];
+        <View style={styles.segRow}>
+          {availableSegments.map((s) => {
+            const active = segment === s;
+            return (
+              <Pressable
+                key={s}
+                onPress={() => onChangeSegment(s)}
+                style={[styles.segPill, active && styles.segPillOn]}
+              >
+                <Text style={[styles.segText, active && styles.segTextOn]}>{scopeLabel(s)}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
 
-    const employees = countBy(users, "corporateId", corporateId);
-    const CORP_SCORE = corporateId === "CORP-Y" ? 73 : 75;
+        {/* Simulate chips (dev-only, behind flag) */}
+        {__DEV__ && ENABLE_SIMULATE_CHIPS ? (
+          <View style={styles.simRow}>
+            <Text style={styles.simLabel}>Simulate:</Text>
+            {["head", "spouse", "child1", "child2"].map((id) => {
+              const on = currentUserId === id;
+              return (
+                <Pressable
+                  key={id}
+                  onPress={async () => {
+                    const ctx = await getAppContext();
+                    await setAppContext({ ...ctx, currentUserId: id });
+                    setCurrentUserId(id);
+                    await refreshAll();
+                  }}
+                  style={[styles.simChip, on && styles.simChipOn]}
+                >
+                  <Text style={[styles.simChipText, on && styles.simChipTextOn]}>
+                    {id === "head"
+                      ? "Head"
+                      : id === "spouse"
+                      ? "Spouse"
+                      : id === "child1"
+                      ? "Child 1"
+                      : "Child 2"}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        ) : null}
+      </View>
+    );
+  };
 
-    return [
-      {
-        key: "workplace" as const,
-        title: corporateId === "CORP-Y" ? "Other Health Group" : "Voravia Health Group",
-        subtitle: `${employees || 1} employees`,
-        meta: "Aggregate only",
-        score: CORP_SCORE,
-        mode: modeByCard.workplace ?? "avg14d",
-      },
-    ];
-  }, [
-    me,
-    segment,
-    activeFamilyId,
-    users,
-    familyGroup?.name,
-    familyMembers,
-    familyScore,
-    insuranceScore,
-    youScore,
-    modeByCard,
-  ]);
+  const renderBody = () => {
+    return (
+      <View style={{ paddingHorizontal: S.lg, paddingBottom: 24 }}>
+        {segment !== "family" && segment !== "workplace" ? (
+        <ScoreCard
+          title="You"
+          subtitle="Your score"
+          meta={youMeta}
+          score={scoresByKey.you}
+          mode={modeByCard.you}
+          onToggle={() => toggleMode("you")}
+          loading={loadingScores}
+        />
+      ) : null}
 
-  return (
-    <View style={[styles.container, { backgroundColor: Theme.colors.bg }]}>
-      <Text style={styles.title}>Health Groups</Text>
+        {segment === "family" ? (
+          <ScoreCard
+            title="Family"
+            subtitle={familySubtitle}
+            meta={`${familyCountMeta} members`}
+            score={scoresByKey.family}
+            mode={modeByCard.family}
+            onToggle={() => toggleMode("family")}
+            loading={loadingScores}
+          />
+        ) : null}
 
-      <View style={styles.segmentRow}>
-        {SEGMENTS.map((s) => (
-          <Pressable key={s} onPress={() => onChangeSegment(s)} style={[styles.segment, segment === s && styles.segmentActive]}>
-            <Text style={[styles.segmentText, segment === s && styles.segmentTextActive]}>{scopeLabel(s)}</Text>
-          </Pressable>
-        ))}
+        {segment === "family" ? (
+          <ScoreCard
+            title="Insurance"
+            subtitle={insuranceSubtitle}
+            meta={`${insuredCount} insured`}
+            score={scoresByKey.insurance}
+            mode={modeByCard.insurance}
+            onToggle={() => toggleMode("insurance")}
+            loading={loadingScores}
+          />
+        ) : null}
+
+        {segment === "workplace" ? (
+          <ScoreCard
+            title="Workplace"
+            subtitle={workplaceSubtitle}
+            meta={`${employeesCountMeta} employees`}
+            score={scoresByKey.workplace}
+            mode={modeByCard.workplace}
+            onToggle={() => toggleMode("workplace")}
+            loading={loadingScores}
+          />
+        ) : null}
+
+        <SectionRow
+          title="Usage"
+          subtitle={segment === "family" ? "Monthly family usage" : "View usage metrics"}
+          onPress={() => router.push("/groups/usage")}
+        />
+
+        {segment === "family" ? (
+          <>
+            {/* Create/Join entry points remain intact */}
+            {!hasFamilyGroup ? (
+              <View style={styles.noFamilyCard}>
+                <Text style={styles.noFamilyTitle}>No family yet</Text>
+                <Text style={styles.noFamilySub}>
+                  Create one to manage members and log for your family.
+                </Text>
+
+                <Pressable
+                  onPress={() => router.push("/groups/create-family")}
+                  style={styles.primaryBtn}
+                >
+                  <Text style={styles.primaryBtnText}>Create Family</Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={() => router.push("/groups/join-family")}
+                  style={styles.ghostBtn}
+                >
+                  <Text style={styles.ghostBtnText}>Join</Text>
+                </Pressable>
+              </View>
+            ) : null}
+
+            {/* Members */}
+            {hasFamilyGroup ? (
+              <View style={styles.membersCard}>
+                <Pressable
+                  onPress={() => setMembersExpanded((v) => !v)}
+                  style={styles.membersHeader}
+                >
+                  <View>
+                    <Text style={styles.membersTitle}>Members</Text>
+                    <Text style={styles.membersCount}>
+                      {apiFamilyMembers.length} member{apiFamilyMembers.length === 1 ? "" : "s"}
+                    </Text>
+                  </View>
+                  <Text style={styles.chevSmall}>{membersExpanded ? "▾" : "▸"}</Text>
+                </Pressable>
+
+                {membersExpanded ? (
+                  <>
+                    <View style={styles.membersTopRow}>
+                      <Pressable
+                        onPress={() => router.push("/groups/assign-insurance")}
+                        style={styles.smallBtn}
+                      >
+                        <Text style={styles.smallBtnText}>Assign Insurance</Text>
+                      </Pressable>
+
+                      <Pressable
+                        onPress={() => router.push("/groups/invite-family")}
+                        style={styles.smallBtn}
+                      >
+                        <Text style={styles.smallBtnText}>Invite</Text>
+                      </Pressable>
+
+                      <Pressable
+                        onPress={() => router.push("/groups/join-family")}
+                        style={styles.smallBtn}
+                      >
+                        <Text style={styles.smallBtnText}>Join</Text>
+                      </Pressable>
+                    </View>
+
+                    <Pressable
+                      onPress={() => {
+                        setAdding((v) => !v);
+                        setMemberMsg(null);
+                      }}
+                      style={[styles.addMemberBtn, adding && { opacity: 0.9 }]}
+                    >
+                      <Text style={styles.addMemberBtnText}>{adding ? "Cancel" : "Add Member"}</Text>
+                    </Pressable>
+
+                    {adding ? (
+                      <View style={styles.addBox}>
+                        <Text style={styles.label}>Name</Text>
+                        <TextInput
+                          value={newName}
+                          onChangeText={setNewName}
+                          placeholder="e.g., Spouse"
+                          placeholderTextColor="rgba(0,0,0,0.45)"
+                          style={styles.input}
+                        />
+
+                        <Text style={styles.label}>Member type</Text>
+                        <Pressable
+                          onPress={() => setNewType(nextMemberType(newType))}
+                          style={styles.typePill}
+                        >
+                          <Text style={styles.typePillText}>{memberTypeLabel(newType)} ▾</Text>
+                        </Pressable>
+
+                        <View style={{ flexDirection: "row", gap: 10, marginTop: S.md }}>
+                          <Pressable onPress={createMember} style={styles.primaryBtn}>
+                            <Text style={styles.primaryBtnText}>Create</Text>
+                          </Pressable>
+                          <Pressable
+                            onPress={() => {
+                              setAdding(false);
+                              setNewName("");
+                              setNewType("parent");
+                            }}
+                            style={styles.ghostBtn}
+                          >
+                            <Text style={styles.ghostBtnText}>Cancel</Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    ) : null}
+
+                    {memberMsg ? <Text style={styles.memberMsg}>{memberMsg}</Text> : null}
+
+                    {loadingMembers ? (
+                      <View style={{ paddingVertical: S.md }}>
+                        <ActivityIndicator />
+                      </View>
+                    ) : (
+
+
+                      <View style={styles.memberGrid}>
+  {apiFamilyMembers.map((m) => (
+    <View key={m.id} style={styles.memberTile}>
+      <View style={styles.memberTileTop}>
+        <Text style={styles.memberTileName} numberOfLines={1}>
+          {m.name || m.id}
+        </Text>
+
+        <Pressable
+          onPress={() => deleteMember(m.id)}
+          hitSlop={10}
+          style={styles.trashBtn}
+        >
+          <Ionicons name="trash-outline" size={18} color="rgba(0,0,0,0.55)" />
+        </Pressable>
       </View>
 
-      {__DEV__ && segment !== "workplace" ? (
-        <View style={styles.devRow}>
-          <Text style={styles.devLabel}>Simulate:</Text>
+      <Pressable
+        onPress={() =>
+          updateMember(m.id, {
+            memberType: nextMemberType(m.memberType || "individual"),
+          })
+        }
+        style={styles.typePillTiny}
+      >
+        <Text style={styles.typePillTinyText}>
+          {memberTypeLabel(m.memberType)} ▾
+        </Text>
+      </Pressable>
 
-          <Pressable onPress={() => onChangeUser("head")} style={[styles.devChip, currentUserId === "head" && styles.devChipActive]}>
-            <Text style={[styles.devChipText, currentUserId === "head" && styles.devChipTextActive]}>Head</Text>
-          </Pressable>
+      <Text style={styles.memberTileMeta} numberOfLines={1}>
+        INS: {m.insuranceId || "—"} • CORP: {m.corporateId || "—"}
+      </Text>
+    </View>
+  ))}
+</View>
 
-          <Pressable onPress={() => onChangeUser("spouse")} style={[styles.devChip, currentUserId === "spouse" && styles.devChipActive]}>
-            <Text style={[styles.devChipText, currentUserId === "spouse" && styles.devChipTextActive]}>Spouse</Text>
-          </Pressable>
+                      
 
-          {users.length === 0 ? (
-            <Pressable onPress={devSeed} style={styles.devSeedBtn}>
-              <Text style={styles.devSeedText}>Seed demo</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      ) : null}
 
-      {showCreateFamilyCTA ? (
-        <View style={styles.emptyBox}>
-          <Text style={styles.emptyTitle}>No family group yet</Text>
-          <Text style={styles.emptySub}>Create one to track a shared health score and streaks.</Text>
 
-          <Pressable onPress={() => router.push("/groups/create-family")} style={styles.primaryBtn}>
-            <Text style={styles.primaryBtnText}>Create Family</Text>
-          </Pressable>
-        </View>
-      ) : null}
+                    )}
+                  </>
+                ) : null}
+              </View>
+            ) : null}
+          </>
+        ) : null}
+      </View>
+    );
+  };
 
-      {segment === "family" && familyGroups.length > 0 ? (
-        <View style={{ marginTop: 10, flexDirection: "row", gap: 12 }}>
-          <Pressable onPress={() => router.push("/groups/invite-family")} style={styles.secondaryBtn}>
-            <Text style={styles.secondaryBtnText}>Invite</Text>
-          </Pressable>
-
-          <Pressable onPress={() => router.push("/groups/join-family")} style={styles.secondaryBtn}>
-            <Text style={styles.secondaryBtnText}>Join</Text>
-          </Pressable>
-        </View>
-      ) : null}
-
-      {segment === "family" && activeFamilyId ? (
-        <View style={styles.membersBox}>
-          <Pressable onPress={() => setMembersExpanded((v) => !v)} style={styles.membersHeaderPressable}>
-            <View style={styles.membersTitleRow}>
-              <Text style={styles.membersTitle}>Members</Text>
-              <Text style={styles.chev}>{membersExpanded ? "▾" : "▸"}</Text>
-            </View>
-
-            <View style={styles.membersSubRow}>
-              <Text style={styles.membersSub}>{familyMembers.length} members</Text>
-
-              <Pressable
-                onPress={(e) => {
-                  // @ts-ignore web-safe
-                  e.stopPropagation?.();
-                  router.push("/groups/assign-insurance");
-                }}
-                style={styles.secondaryBtn}
-              >
-                <Text style={styles.secondaryBtnText}>Assign Insurance</Text>
-              </Pressable>
-            </View>
-          </Pressable>
-
-          {membersExpanded && (
-            <View>
-              <View style={{ height: 1, backgroundColor: "#E5E7EB", marginTop: 8, marginBottom: 8 }} />
-
-              {familyMembers.length === 0 ? (
-                <Text style={styles.membersEmpty}>No members joined yet.</Text>
-              ) : (
-                familyMembers.map((m) => (
-                  <View key={m.id} style={styles.memberRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.memberName}>
-                        {m.name ?? m.id}
-                        {m.id === "head" ? " (Head)" : m.id === "spouse" ? " (Spouse)" : ""}
-                      </Text>
-
-                      <Text style={styles.memberMeta}>
-                        {m.insuranceId ? `INS: ${m.insuranceId}` : "INS: —"}
-                        {"  •  "}
-                        {m.corporateId ? `CORP: ${m.corporateId}` : "CORP: —"}
-                      </Text>
-                    </View>
-
-                    <View style={styles.memberBadges}>
-                      {m.insuranceId && (
-                        <View style={styles.badge}>
-                          <Text style={styles.badgeText}>INS</Text>
-                        </View>
-                      )}
-                      {m.corporateId && (
-                        <View style={styles.badge}>
-                          <Text style={styles.badgeText}>CORP</Text>
-                        </View>
-                      )}
-                    </View>
-                  </View>
-                ))
-              )}
-            </View>
-          )}
-        </View>
-      ) : null}
-
-      <SectionRow title="Usage" subtitle="Monthly family usage" onPress={() => router.push("/groups/usage")} />
-
+  return (
+    <View style={styles.page}>
       <FlatList
-        data={cards}
-        keyExtractor={(item) => item.key}
-        contentContainerStyle={{ paddingTop: 12, paddingBottom: 16 }}
-        renderItem={({ item }) => (
-          <ScoreCard
-            title={item.title}
-            subtitle={item.subtitle}
-            meta={item.meta}
-            score={item.score}
-            mode={item.mode}
-            loading={loadingScores && (item.key === "you" || item.key === "family" || item.key === "insurance")}
-            onToggle={() => toggle(item.key)}
-          />
-        )}
+        data={[{ id: "body" }]}
+        keyExtractor={(x) => x.id}
+        renderItem={() => renderBody()}
+        ListHeaderComponent={renderHeader}
+        contentContainerStyle={{ paddingBottom: 24 }}
+        showsVerticalScrollIndicator={false}
       />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16 },
-  title: { fontSize: 22, fontWeight: "800", marginBottom: 12 },
+  page: { flex: 1, backgroundColor: Theme.colors.bg },
 
-  segmentRow: {
+  h1: {
+    fontSize: 28,
+    fontWeight: "800",
+    color: "#0B2A2F",
+    letterSpacing: 0.2,
+    marginBottom: 10,
+  },
+
+  segRow: {
     flexDirection: "row",
     backgroundColor: "rgba(0,0,0,0.06)",
-    borderRadius: 12,
-    padding: 4,
+    borderRadius: Theme.radius.lg,
+    padding: 6,
+    gap: 6,
   },
-  segment: {
+  segPill: {
     flex: 1,
-    paddingVertical: 8,
-    borderRadius: 10,
+    paddingVertical: S.md,
+    borderRadius: Theme.radius.lg,
     alignItems: "center",
   },
-  segmentActive: { backgroundColor: "#0f766e" },
-  segmentText: { fontWeight: "700", color: "rgba(0,0,0,0.65)" },
-  segmentTextActive: { color: "white" },
-
-  emptyBox: {
-    marginTop: 12,
-    padding: 14,
-    borderRadius: 14,
-    backgroundColor: "rgba(0,0,0,0.04)",
+  segPillOn: {
+    backgroundColor: "#0F766E",
   },
-  emptyTitle: { fontWeight: "800" },
-  emptySub: { marginTop: 6, opacity: 0.7 },
+  segText: {
+    fontWeight: "900",
+    color: "rgba(0,0,0,0.55)",
+  },
+  segTextOn: {
+    color: "white",
+  },
+
+  simRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: S.md, flexWrap: "wrap" },
+  simLabel: { fontWeight: "900", color: "rgba(0,0,0,0.55)" },
+  simChip: {
+    paddingVertical: S.md,
+    paddingHorizontal: S.lg,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,0,0,0.06)",
+  },
+  simChipOn: { backgroundColor: "rgba(15,118,110,0.18)" },
+  simChipText: { fontWeight: "900", color: "rgba(0,0,0,0.55)" },
+  simChipTextOn: { color: "#0F766E" },
+
+  noFamilyCard: {
+    marginTop: S.md,
+    backgroundColor: Theme.colors.bg,
+    borderRadius: Theme.radius.lg,
+    padding: 16,
+  },
+  noFamilyTitle: { fontSize: 18, fontWeight: "900", color: "#0F172A" },
+  noFamilySub: { marginTop: 6, color: "rgba(0,0,0,0.55)", fontWeight: "700" },
 
   primaryBtn: {
-    marginTop: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    alignSelf: "flex-start",
-    backgroundColor: "#0f766e",
+    marginTop: S.md,
+    backgroundColor: "#0F766E",
+    borderRadius: Theme.radius.lg,
+    paddingVertical: S.md,
+    paddingHorizontal: S.lg,
+    alignItems: "center",
   },
-  primaryBtnText: { color: "white", fontWeight: "800" },
+  primaryBtnText: { color: "white", fontWeight: "900", fontSize: 16 },
 
-  secondaryBtn: {
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 12,
+  ghostBtn: {
+    marginTop: S.md,
+    backgroundColor: "rgba(15,118,110,0.10)",
+    borderRadius: Theme.radius.lg,
+    paddingVertical: S.md,
+    paddingHorizontal: S.lg,
+    alignItems: "center",
+  },
+  ghostBtnText: { color: "#0F766E", fontWeight: "900", fontSize: 16 },
+
+  membersCard: {
+    marginTop: S.md,
+    backgroundColor: "rgba(15,118,110,0.08)",
+    borderRadius: Theme.radius.lg,
+    padding: 14,
+  },
+  membersHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  membersTitle: { fontSize: 16, fontWeight: "900", color: "#0F172A" },
+  membersCount: { marginTop: 2, fontWeight: "800", color: "rgba(0,0,0,0.55)" },
+  chevSmall: { fontSize: 20, fontWeight: "900", color: "rgba(0,0,0,0.45)" },
+
+  membersTopRow: { flexDirection: "row", gap: 10, flexWrap: "wrap", marginTop: S.md },
+  smallBtn: {
     backgroundColor: "rgba(15,118,110,0.12)",
-    borderColor: "rgba(15,118,110,0.45)",
+    borderRadius: 999,
+    paddingVertical: S.sm,
+    paddingHorizontal: S.sm,
   },
-  secondaryBtnText: { fontWeight: "900", fontSize: 13, color: "#0f766e" },
+  smallBtnText: { fontWeight: "900", color: "#0F766E" },
 
-  devRow: {
-    marginTop: 10,
+  addMemberBtn: {
+    marginTop: S.md,
+    backgroundColor: "rgba(15,118,110,0.10)",
+    borderRadius: Theme.radius.lg,
+    paddingVertical: S.sm,
+    alignItems: "center",
+  },
+  addMemberBtnText: { fontWeight: "900", color: "#0F766E", fontSize: 14 },
+
+  addBox: {
+    marginTop: S.md,
+    backgroundColor: Theme.colors.bg,
+    borderRadius: Theme.radius.lg,
+    padding: 14,
+  },
+  label: { fontWeight: "900", color: "#0F172A", marginTop: S.md },
+  input: {
+    marginTop: S.md,
+    borderWidth: 1,
+    borderColor: Theme.colors.divider,
+    borderRadius: Theme.radius.lg,
+    paddingVertical: S.md,
+    paddingHorizontal: S.lg,
+    backgroundColor: Theme.colors.bg,
+    fontWeight: "800",
+  },
+  typePill: {
+    marginTop: S.md,
+    alignSelf: "flex-start",
+    paddingVertical: S.md,
+    paddingHorizontal: S.lg,
+    borderRadius: 999,
+    backgroundColor: "rgba(15,118,110,0.10)",
+  },
+  typePillText: { fontWeight: "900", color: "#0F766E" },
+
+  memberMsg: { marginTop: 10, fontWeight: "900", color: "rgba(0,0,0,0.65)" },
+
+  memberRow: {
+    marginTop: S.md,
+    backgroundColor: "rgba(255,255,255,0.65)",
+    borderRadius: Theme.radius.lg,
+    padding: 14,
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    flexWrap: "wrap",
   },
-  devLabel: { fontWeight: "800", opacity: 0.7 },
-  devChip: {
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 999,
-    backgroundColor: "rgba(0,0,0,0.06)",
-  },
-  devChipActive: { backgroundColor: "#0f766e" },
-  devChipText: { fontWeight: "800", color: "rgba(0,0,0,0.65)" },
-  devChipTextActive: { color: "white" },
-  devSeedBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 999,
-    backgroundColor: "rgba(0,0,0,0.10)",
-  },
-  devSeedText: { fontWeight: "800", color: "rgba(0,0,0,0.7)" },
+  memberName: { fontWeight: "900", fontSize: 18, color: "#0F172A" },
+  memberMetaRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: S.md, flexWrap: "wrap" },
 
-  membersTitleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  chev: { fontSize: 16, fontWeight: "900", opacity: 0.55 },
-
-  membersBox: {
-    marginTop: 12,
-    padding: 14,
-    borderRadius: 14,
-    backgroundColor: "rgba(0,0,0,0.04)",
+  typePillSmall: {
+    paddingVertical: S.md,
+    paddingHorizontal: S.lg,
+    borderRadius: 999,
+    backgroundColor: "rgba(15,118,110,0.12)",
   },
-  membersTitle: { fontSize: 14, fontWeight: "900" },
-  membersSubRow: {
-    marginTop: 8,
+  typePillSmallText: { fontWeight: "900", color: "#0F766E" },
+
+  memberMetaText: { fontWeight: "900", color: "rgba(0,0,0,0.55)" },
+
+  deleteBtn: {
+    backgroundColor: "rgba(220,38,38,0.10)",
+    borderRadius: 999,
+    paddingVertical: S.md,
+    paddingHorizontal: S.lg,
+  },
+  deleteBtnText: { fontWeight: "900", color: "rgba(220,38,38,0.90)" },
+
+  memberRowCompact: {
+    marginTop: 10,
+    backgroundColor: "rgba(255,255,255,0.75)",
+    borderRadius: Theme.radius.lg,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  
+  memberTopLine: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    gap: 10,
   },
-  membersSub: { fontSize: 12, color: "#6B7280", marginTop: 2 },
-  membersEmpty: { opacity: 0.65 },
-
-  membersHeaderPressable: { paddingBottom: 10 },
-
-  memberRow: {
+  
+  memberTopRight: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    borderTopColor: "rgba(0,0,0,0.06)",
+    gap: 8,
   },
-  memberName: { fontWeight: "900" },
-  memberMeta: { marginTop: 3, opacity: 0.7, fontSize: 12 },
-
-  memberBadges: { flexDirection: "row", gap: 8, marginLeft: 12 },
-  badge: {
-    paddingVertical: 4,
-    paddingHorizontal: 8,
+  
+  memberNameCompact: {
+    flex: 1,
+    fontWeight: "900",
+    fontSize: 16,
+    color: "#0F172A",
+  },
+  
+  memberMetaTextCompact: {
+    marginTop: 6,
+    fontWeight: "800",
+    fontSize: 12,
+    color: "rgba(0,0,0,0.55)",
+  },
+  
+  
+  deleteBtnTiny: {
+    backgroundColor: "rgba(220,38,38,0.10)",
+    borderRadius: 999,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+  },
+  
+  deleteBtnTinyText: {
+    fontWeight: "900",
+    fontSize: 12,
+    color: "rgba(220,38,38,0.90)",
+  },
+  
+  memberGrid: {
+    marginTop: 10,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  
+  memberTile: {
+    width: "48%",
+    backgroundColor: "rgba(255,255,255,0.65)",
+    borderRadius: Theme.radius.lg,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: "rgba(15,118,110,0.10)",
+  },
+  
+  memberTileTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  
+  memberTileName: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "900",
+    color: "#0F172A",
+  },
+  
+  trashBtn: {
+    padding: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,0,0,0.04)",
+  },
+  
+  typePillTiny: {
+    marginTop: 8,
+    alignSelf: "flex-start",
+    paddingVertical: 5,
+    paddingHorizontal: 10,
     borderRadius: 999,
     backgroundColor: "rgba(15,118,110,0.12)",
-    borderWidth: 1,
-    borderColor: "rgba(15,118,110,0.30)",
   },
-  badgeText: { fontWeight: "900", fontSize: 12 },
+  
+  typePillTinyText: {
+    fontSize: 11,
+    fontWeight: "900",
+    color: "#0F766E",
+  },
+  
+  memberTileMeta: {
+    marginTop: 8,
+    fontSize: 11,
+    fontWeight: "800",
+    color: "rgba(0,0,0,0.50)",
+  },
+  
+
+
 });

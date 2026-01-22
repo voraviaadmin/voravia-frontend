@@ -4,9 +4,13 @@ import { useFocusEffect, router } from "expo-router";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { getAppContext } from "@/src/storage/appContext";
-import { listUsers, upsertUser, UserProfile } from "@/src/storage/users";
-import { listGroups } from "@/src/storage/groups";
 import { Theme } from "@/src/ui/theme";
+import { API_BASE } from "../../lib/api";
+
+// Backwards-compatible helper (older screens still call this)
+export function getApiBaseUrl() {
+  return API_BASE;
+}
 
 // ---- Safe fallbacks in case Theme is missing keys ----
 const C = (Theme as any)?.colors ?? {};
@@ -41,54 +45,94 @@ const TEXT = {
   title: T.title ?? 22,
 };
 
-export default function AssignInsuranceScreen() {
-  const [users, setUsers] = useState<UserProfile[]>([]);
-  const [activeFamilyId, setActiveFamilyId] = useState<string>("");
+type ApiFamilyMember = {
+  id: string;
+  name?: string;
+  memberType?: "individual" | "parent" | "child";
+  insuranceId?: string | null;
+};
 
+function localIdToBackendId(id: string) {
+  return id === "head"
+    ? "u_head"
+    : id === "spouse"
+    ? "u_spouse"
+    : id === "child1"
+    ? "u_child1"
+    : id === "child2"
+    ? "u_child2"
+    : "u_head";
+}
+
+function memberTypeLabel(t?: ApiFamilyMember["memberType"]) {
+  if (t === "parent") return "Parent";
+  if (t === "child") return "Child";
+  return "Individual";
+}
+
+export default function AssignInsuranceScreen() {
+  const [members, setMembers] = useState<ApiFamilyMember[]>([]);
   const [insuranceId, setInsuranceId] = useState<string>("");
   const [selectedIds, setSelectedIds] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
+  const load = useCallback(async () => {
+    const ctx = await getAppContext();
+    const backendUserId = localIdToBackendId(ctx.currentUserId || "head");
+
+    const api = getApiBaseUrl();
+    const resp = await fetch(`${api}/v1/family/members`, {
+      method: "GET",
+      headers: { "x-user-id": backendUserId },
+    });
+    const json = await resp.json().catch(() => ({}));
+    const items = Array.isArray(json?.items) ? json.items : [];
+
+    const ms: ApiFamilyMember[] = items
+      .filter((m: any) => m && (typeof m.id === "string" || typeof m.id === "number"))
+      .map((m: any) => ({
+        id: String(m.id),
+        name: m.name ? String(m.name) : undefined,
+        memberType: (String(m.memberType || "") as any) || "individual",
+        insuranceId: m.insuranceId ?? null,
+      }));
+
+    // default select all (same UX as before)
+    const nextSel: Record<string, boolean> = {};
+    ms.forEach((m) => (nextSel[m.id] = true));
+
+    setMembers(ms);
+    setSelectedIds(nextSel);
+
+    // Prefill insurance input if all selected share the same insuranceId
+    const selected = ms.filter((m) => nextSel[m.id]);
+    const uniq = Array.from(
+      new Set(
+        selected
+          .map((m) => String(m.insuranceId || "").trim())
+          .filter(Boolean)
+      )
+    );
+    if (uniq.length === 1) setInsuranceId(uniq[0]);
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
       let alive = true;
-
       (async () => {
-        const ctx = await getAppContext();
-        const us = await listUsers();
-        const me = us.find((u) => u.id === ctx.currentUserId) ?? null;
-
-        let famId = me?.familyId ?? "";
-        if (!famId) {
-          const gs = await listGroups();
-          famId = gs.find((g) => g.type === "Family")?.id ?? "";
+        try {
+          await load();
+        } catch (e: any) {
+          if (!alive) return;
+          setMsg(e?.message ?? "Couldn't load members.");
         }
-
-        if (!alive) return;
-
-        setUsers(us);
-        setActiveFamilyId(famId);
-        setInsuranceId(me?.insuranceId ?? "");
-
-        const famMembers = famId ? us.filter((u) => u.familyId === famId) : [];
-        const nextSel: Record<string, boolean> = {};
-        famMembers.forEach((u) => (nextSel[u.id] = true));
-        setSelectedIds(nextSel);
-
-        setMsg(null);
       })();
-
       return () => {
         alive = false;
       };
-    }, [])
+    }, [load])
   );
-
-  const familyMembers = useMemo(() => {
-    if (!activeFamilyId) return [];
-    return users.filter((u) => u.familyId === activeFamilyId);
-  }, [users, activeFamilyId]);
 
   const selectedCount = useMemo(
     () => Object.values(selectedIds).filter(Boolean).length,
@@ -102,66 +146,86 @@ export default function AssignInsuranceScreen() {
   const setAll = useCallback(
     (value: boolean) => {
       const next: Record<string, boolean> = {};
-      familyMembers.forEach((u) => (next[u.id] = value));
+      members.forEach((m) => (next[m.id] = value));
       setSelectedIds(next);
     },
-    [familyMembers]
+    [members]
   );
 
-  const refreshUsers = useCallback(async () => {
-    const refreshed = await listUsers();
-    setUsers(refreshed);
-  }, []);
+  const patchMemberInsurance = useCallback(
+    async (memberId: string, nextInsuranceId: string) => {
+      const ctx = await getAppContext();
+      const backendUserId = localIdToBackendId(ctx.currentUserId || "head");
+
+      const api = getApiBaseUrl();
+      const resp = await fetch(`${api}/v1/family/members/${encodeURIComponent(memberId)}`, {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          "x-user-id": backendUserId,
+        },
+        body: JSON.stringify({ insuranceId: nextInsuranceId }),
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(json?.error || json?.message || "Failed to update insurance.");
+    },
+    []
+  );
 
   const onApply = useCallback(async () => {
     setMsg(null);
 
     const id = insuranceId.trim().toUpperCase();
     if (!id) return setMsg("Enter an Insurance ID (e.g., INS-A).");
-    if (!activeFamilyId) return setMsg("No family found. Join or create a family first.");
+    if (members.length === 0) return setMsg("No family members found.");
     if (selectedCount === 0) return setMsg("Select at least one family member.");
 
     setSaving(true);
     try {
-      await Promise.all(
-        familyMembers
-          .filter((u) => selectedIds[u.id])
-          .map((u) => upsertUser({ ...u, insuranceId: id }))
-      );
+      for (const m of members) {
+        if (!selectedIds[m.id]) continue;
+        await patchMemberInsurance(m.id, id);
+      }
 
-      await refreshUsers();
       setMsg(`Applied ${id} to ${selectedCount} member${selectedCount === 1 ? "" : "s"}.`);
+
+      // Reload so UI reflects backend truth
+      await load();
+
+      // Optional: go back to members list
       router.back();
     } catch (e: any) {
       setMsg(e?.message ?? "Failed to apply insurance.");
     } finally {
       setSaving(false);
     }
-  }, [insuranceId, activeFamilyId, selectedCount, familyMembers, selectedIds, refreshUsers]);
+  }, [insuranceId, members, selectedCount, selectedIds, patchMemberInsurance, load]);
 
   const onClearSelected = useCallback(async () => {
     setMsg(null);
 
-    if (!activeFamilyId) return setMsg("No family found. Join or create a family first.");
+    if (members.length === 0) return setMsg("No family members found.");
     if (selectedCount === 0) return setMsg("Select at least one family member.");
 
     setSaving(true);
     try {
-      await Promise.all(
-        familyMembers
-          .filter((u) => selectedIds[u.id])
-          .map((u) => upsertUser({ ...u, insuranceId: "" }))
-      );
+      // Use empty string to ensure it overwrites even if backend COALESCE ignores null.
+      // Groups screen counts insured using trim(), so "" will be treated as not insured.
+      for (const m of members) {
+        if (!selectedIds[m.id]) continue;
+        await patchMemberInsurance(m.id, "");
+      }
 
-      await refreshUsers();
       setMsg(`Cleared insurance for ${selectedCount} member${selectedCount === 1 ? "" : "s"}.`);
+
+      await load();
       router.back();
     } catch (e: any) {
       setMsg(e?.message ?? "Failed to clear insurance.");
     } finally {
       setSaving(false);
     }
-  }, [activeFamilyId, selectedCount, familyMembers, selectedIds, refreshUsers]);
+  }, [members, selectedCount, selectedIds, patchMemberInsurance, load]);
 
   const insets = useSafeAreaInsets();
 
@@ -169,18 +233,13 @@ export default function AssignInsuranceScreen() {
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <ScrollView
         style={styles.safe}
-        contentContainerStyle={[
-          styles.page,
-          { paddingBottom: SPACING.page + insets.bottom },
-        ]}
+        contentContainerStyle={[styles.page, { paddingBottom: SPACING.page + insets.bottom }]}
         keyboardShouldPersistTaps="handled"
       >
         <Text style={styles.title}>Assign Insurance</Text>
 
         <View style={styles.card}>
-          <Text style={styles.sub}>
-            Assign an Insurance ID to one or more family members. (Local-only for now.)
-          </Text>
+          <Text style={styles.sub}>Assign an Insurance ID to one or more family members.</Text>
 
           <Text style={styles.label}>Insurance ID</Text>
           <TextInput
@@ -201,21 +260,22 @@ export default function AssignInsuranceScreen() {
             </Pressable>
           </View>
 
-          <Text style={styles.label}>Family members ({familyMembers.length})</Text>
+          <Text style={styles.label}>Family members ({members.length})</Text>
 
           <ScrollView
             style={styles.memberList}
             contentContainerStyle={{ paddingBottom: 6 }}
             keyboardShouldPersistTaps="handled"
           >
-            {familyMembers.length === 0 ? (
+            {members.length === 0 ? (
               <Text style={styles.emptyText}>No members found for this family.</Text>
             ) : (
-              familyMembers.map((m) => {
+              members.map((m) => {
                 const checked = !!selectedIds[m.id];
                 const name = m.name ?? m.id;
-                const role = m.id === "head" ? "Head" : m.id === "spouse" ? "Spouse" : "Member";
-                const current = m.insuranceId ? `INS: ${m.insuranceId}` : "INS: —";
+                const current = String(m.insuranceId || "").trim()
+                  ? `INS: ${String(m.insuranceId).trim()}`
+                  : "INS: —";
 
                 return (
                   <Pressable key={m.id} onPress={() => toggle(m.id)} style={styles.memberRow}>
@@ -225,7 +285,7 @@ export default function AssignInsuranceScreen() {
 
                     <View style={{ flex: 1 }}>
                       <Text style={styles.memberName}>
-                        {name} ({role})
+                        {name} ({memberTypeLabel(m.memberType)})
                       </Text>
                       <Text style={styles.memberMeta}>{current}</Text>
                     </View>
@@ -264,7 +324,7 @@ const styles = StyleSheet.create({
 
   page: {
     paddingHorizontal: SPACING.page,
-    paddingTop: 12, // aligns with other tabs
+    paddingTop: 12,
   },
 
   title: {
@@ -285,6 +345,7 @@ const styles = StyleSheet.create({
   sub: {
     opacity: 0.75,
     color: COLORS.muted,
+    fontWeight: "700",
   },
 
   label: {
@@ -303,6 +364,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
     color: COLORS.text,
+    fontWeight: "800",
   },
 
   row: {
@@ -331,7 +393,7 @@ const styles = StyleSheet.create({
 
   memberList: {
     marginTop: 6,
-    maxHeight: 280,
+    maxHeight: 320,
   },
 
   memberRow: {

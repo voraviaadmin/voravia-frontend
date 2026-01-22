@@ -1,10 +1,15 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { View, Text, Pressable, StyleSheet } from "react-native";
 import * as Clipboard from "expo-clipboard";
-import { useFocusEffect, router } from "expo-router";
+import { useFocusEffect, router, Stack } from "expo-router";
 
 import { getAppContext } from "@/src/storage/appContext";
 import { getUserById } from "@/src/storage/users";
+
+import { Screen } from "@/src/ui/Screen";
+import { headerStyles } from "@/src/ui/headerStyle";
+import { Theme } from "@/src/ui/theme";
+import { S } from "@/src/ui/spacing";
 
 export default function InviteWorkplaceScreen() {
   const [corpId, setCorpId] = useState<string>("");
@@ -35,22 +40,18 @@ export default function InviteWorkplaceScreen() {
   }, [code]);
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Invite to Workplace</Text>
+    <Screen scroll style={{ backgroundColor: Theme.colors.bg }}>
+      <Stack.Screen options={{ ...headerStyles.base, title: "Invite workplace" }} />
 
       <View style={styles.card}>
-        <Text style={styles.cardSub}>
-          Share this corporate code with employees to join.
-        </Text>
+        <Text style={styles.sub}>Share this corporate code with employees to join.</Text>
 
         <View style={styles.codeBox}>
-          <Text style={styles.codeText}>
-            {code || "No Corporate ID set yet (update in Profile)."}
-          </Text>
+          <Text style={styles.codeText}>{code || "No Corporate ID set yet (update in Profile)."}</Text>
         </View>
 
         <View style={styles.row}>
-          <Pressable style={styles.primaryBtn} onPress={onCopy} disabled={!code}>
+          <Pressable style={[styles.primaryBtn, !code && styles.disabled]} onPress={onCopy} disabled={!code}>
             <Text style={styles.primaryBtnText}>{copied ? "Copied" : "Copy code"}</Text>
           </Pressable>
 
@@ -58,37 +59,59 @@ export default function InviteWorkplaceScreen() {
             <Text style={styles.ghostBtnText}>Done</Text>
           </Pressable>
         </View>
-      </View>
 
-      <Text style={styles.hint}>
-        Local-only. Later this becomes an email invite link managed by the employer.
-      </Text>
-    </View>
+        <Text style={styles.hint}>
+          Local-only. Later this becomes an email invite link managed by the employer.
+        </Text>
+      </View>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16, backgroundColor: "#f6f7fb" },
-  title: { fontSize: 22, fontWeight: "900", marginBottom: 12 },
-  card: { padding: 14, borderRadius: 14, backgroundColor: "rgba(0,0,0,0.04)" },
-  cardSub: { opacity: 0.7 },
+  card: {
+    backgroundColor: Theme.colors.card,
+    borderRadius: Theme.radius.lg,
+    borderWidth: 1,
+    borderColor: Theme.colors.divider,
+    padding: S.lg,
+    gap: S.md,
+  },
+  sub: { color: Theme.colors.textMuted, fontWeight: "700" },
 
   codeBox: {
-    marginTop: 12,
     paddingVertical: 14,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    backgroundColor: "white",
+    paddingHorizontal: 14,
+    borderRadius: Theme.radius.lg,
+    backgroundColor: Theme.colors.bg,
     borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.10)",
+    borderColor: Theme.colors.divider,
+    alignItems: "center",
   },
-  codeText: { fontWeight: "900", fontSize: 16, letterSpacing: 0.5 },
+  codeText: { fontWeight: "900", fontSize: 16, letterSpacing: 0.5, color: Theme.colors.textPrimary },
 
-  row: { marginTop: 12, flexDirection: "row", gap: 12, alignItems: "center" },
-  primaryBtn: { backgroundColor: "#0f766e", paddingVertical: 10, paddingHorizontal: 14, borderRadius: 12 },
+  row: { flexDirection: "row", gap: S.md, alignItems: "center" },
+
+  primaryBtn: {
+    flex: 1,
+    backgroundColor: Theme.colors.teal,
+    paddingVertical: 14,
+    borderRadius: Theme.radius.lg,
+    alignItems: "center",
+  },
   primaryBtnText: { color: "white", fontWeight: "900" },
-  ghostBtn: { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 12, backgroundColor: "rgba(0,0,0,0.06)" },
-  ghostBtnText: { fontWeight: "900", color: "rgba(0,0,0,0.75)" },
 
-  hint: { marginTop: 10, opacity: 0.6 },
+  ghostBtn: {
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: Theme.radius.lg,
+    backgroundColor: Theme.colors.card,
+    borderWidth: 1,
+    borderColor: Theme.colors.divider,
+    alignItems: "center",
+  },
+  ghostBtnText: { fontWeight: "900", color: Theme.colors.textPrimary },
+
+  hint: { color: Theme.colors.textMuted, fontWeight: "700" },
+  disabled: { opacity: 0.5 },
 });

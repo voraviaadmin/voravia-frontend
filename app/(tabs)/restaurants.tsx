@@ -628,7 +628,7 @@ const getLocation = useCallback(async (): Promise<{ lat: number; lng: number }> 
 
 const styles = StyleSheet.create({
   container: { flex: 1, padding: 16, backgroundColor: "#F5FAFB" },
-  title: { fontSize: 28, fontWeight: "900" },
+  title: { fontSize: 28, fontWeight: "800", color: "#0B2A2F", letterSpacing: 0.2 },
   sub: { color: "#4A6468", marginBottom: 8 },
   hint: { marginTop: 10, color: "#4A6468" },
 

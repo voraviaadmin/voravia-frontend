@@ -1,148 +1,256 @@
 import React, { useState, useMemo, useEffect, useCallback } from "react";
-import { View, Text, StyleSheet, Pressable, Image, ScrollView, Alert } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { useMe } from "../../src/hooks/useMe";
+import { View, Text, StyleSheet, Pressable, Image, Alert, ActivityIndicator } from "react-native";
+import { Stack, useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 
+import { Screen } from "@/src/ui/Screen";
+import { Theme } from "@/src/ui/theme";
+import { S } from "@/src/ui/spacing";
+import { headerStyles } from "@/src/ui/headerStyle";
 
+import { getAppContext } from "@/src/storage/appContext";
+import { fetchMe } from "@/lib/me";
+import { fetchFamilyMembers } from "@/lib/family";
+import { API_BASE } from "@/lib/api";
 
 type OldShape = {
   scanId?: string;
   candidates?: { name: string; confidence: number }[];
-  nutrition?: {
-    calories?: number;
-    protein_g?: number;
-    carbs_g?: number;
-    fat_g?: number;
-    sugar_g?: number;
-    sodium_mg?: number;
-    fiber_g?: number;
-  };
-  rating?: { score: number; label: string; reasons?: string[]; tips?: string[] };
+  nutrition?: any;
+  rating?: { score: number; label?: string; reasons?: string[]; tips?: string[] };
 };
 
 type NewShape = {
   scanId?: string;
   dishName?: string;
-  confidence?: number;
   score?: number;
   label?: string;
-  why?: string[];
+  why?: string;
   tips?: string[];
-  estimatedNutrition?: {
-    caloriesKcal?: number;
-    proteinG?: number;
-    carbsG?: number;
-    fatG?: number;
-    fiberG?: number;
-    sugarG?: number;
-    sodiumMg?: number;
-  };
+  estimatedNutrition?: any;
+  nutrition?: any;
 };
 
 type Normalized = {
-  scanId: string | null;
+  scanId: string;
   dishName: string;
-  confidencePct: number | null;
   score: number;
-  label: "Great" | "Okay" | "Limit" | "Avoid";
-  why: string[];
+  label?: string;
+  why: string;
   tips: string[];
   nutrition: {
     calories?: number;
     protein_g?: number;
     carbs_g?: number;
     fat_g?: number;
+    sodium_mg?: number;
     fiber_g?: number;
     sugar_g?: number;
-    sodium_mg?: number;
-  };
+  } | null;
+  confidencePct: number;
+  candidates: { name: string; confidence: number }[];
 };
 
-type LogForOption = {
-  id: string;
-  name: string;
-};
+type LogForOption = { id: string; name: string };
 
+function localIdToBackendActorId(id: string) {
+  if (!id) return "u_head";
+  if (id.startsWith("u_")) return id;
+  if (id === "head") return "u_head";
+  if (id === "spouse") return "u_spouse";
+  if (id === "child1") return "u_child1";
+  if (id === "child2") return "u_child2";
+  return "u_head";
+}
 
-function getApiBaseUrl() {
+function clampScore(x: any) {
+  const n = Number(x);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function deriveLabelFromScore(score: number, explicit?: string) {
+  const raw = String(explicit || "").trim();
+  if (raw) return raw;
+  if (score >= 80) return "Great";
+  if (score >= 60) return "Good";
+  if (score >= 40) return "Okay";
+  return "Poor";
+}
+
+function looksLikeNutritionObject(x: any) {
+  if (!x || typeof x !== "object") return false;
+  const keys = Object.keys(x).map((k) => k.toLowerCase());
   return (
-    process.env.EXPO_PUBLIC_API_BASE_URL ||
-    process.env.EXPO_PUBLIC_API_URL ||
-    "http://localhost:8787"
+    keys.includes("calories") ||
+    keys.includes("kcal") ||
+    keys.includes("calories_kcal") ||
+    keys.includes("calorieskcal") ||
+    keys.includes("protein_g") ||
+    keys.includes("protein") ||
+    keys.includes("carbs_g") ||
+    keys.includes("carbs") ||
+    keys.includes("fat_g") ||
+    keys.includes("fat") ||
+    keys.includes("sodium_mg") ||
+    keys.includes("sodium") ||
+    keys.includes("fiber_g") ||
+    keys.includes("fiber") ||
+    keys.includes("sugar_g") ||
+    keys.includes("sugar")
+  );
+}
+
+function deepFindNutrition(payload: any, maxDepth = 7) {
+  const seen = new Set<any>();
+
+  const walk = (node: any, depth: number): any | null => {
+    if (!node || depth > maxDepth) return null;
+    if (typeof node !== "object") return null;
+    if (seen.has(node)) return null;
+    seen.add(node);
+
+    if (looksLikeNutritionObject(node)) return node;
+
+    if (Array.isArray(node)) {
+      for (const it of node) {
+        const found = walk(it, depth + 1);
+        if (found) return found;
+      }
+      return null;
+    }
+
+    const fastKeys = ["estimatedNutrition", "nutrition", "estimated_nutrition", "nutritionFacts"];
+    for (const k of fastKeys) {
+      if ((node as any)[k]) {
+        const found = walk((node as any)[k], depth + 1);
+        if (found) return found;
+      }
+    }
+
+    for (const v of Object.values(node)) {
+      const found = walk(v, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  };
+
+  return walk(payload, 0);
+}
+
+function normalizeNutrition(n: any): Normalized["nutrition"] {
+  if (!n || typeof n !== "object") return null;
+
+  const calories =
+    n.calories ?? n.kcal ?? n.calories_kcal ?? n.caloriesKcal ?? n.energy_kcal ?? n.energyKcal;
+
+  const protein_g = n.protein_g ?? n.proteinG ?? n.protein;
+  const carbs_g = n.carbs_g ?? n.carbsG ?? n.carbs;
+  const fat_g = n.fat_g ?? n.fatG ?? n.fat;
+  const fiber_g = n.fiber_g ?? n.fiberG ?? n.fiber;
+  const sugar_g = n.sugar_g ?? n.sugarG ?? n.sugar;
+  const sodium_mg = n.sodium_mg ?? n.sodiumMg ?? n.sodium;
+
+  const out = {
+    calories: Number.isFinite(Number(calories)) ? Number(calories) : undefined,
+    protein_g: Number.isFinite(Number(protein_g)) ? Number(protein_g) : undefined,
+    carbs_g: Number.isFinite(Number(carbs_g)) ? Number(carbs_g) : undefined,
+    fat_g: Number.isFinite(Number(fat_g)) ? Number(fat_g) : undefined,
+    fiber_g: Number.isFinite(Number(fiber_g)) ? Number(fiber_g) : undefined,
+    sugar_g: Number.isFinite(Number(sugar_g)) ? Number(sugar_g) : undefined,
+    sodium_mg: Number.isFinite(Number(sodium_mg)) ? Number(sodium_mg) : undefined,
+  };
+
+  const hasAny = Object.values(out).some((v) => Number.isFinite(Number(v)));
+  return hasAny ? out : null;
+}
+
+function clampPct(n: any) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return 0;
+  return Math.max(0, Math.min(100, Math.round(x)));
+}
+
+function toPct(maybe: any) {
+  if (maybe == null) return 0;
+  if (typeof maybe === "string" && maybe.includes("%")) {
+    const n = Number(maybe.replace("%", "").trim());
+    return clampPct(n);
+  }
+  const n = Number(maybe);
+  if (!Number.isFinite(n)) return 0;
+  if (n > 0 && n <= 1) return clampPct(n * 100);
+  return clampPct(n);
+}
+
+function deepFindConfidence(payload: any) {
+  return (
+    payload?.confidence ??
+    payload?.result?.confidence ??
+    payload?.analysis?.confidence ??
+    payload?.dish?.confidence ??
+    payload?.classification?.confidence ??
+    payload?.candidates?.[0]?.confidence ??
+    payload?.result?.candidates?.[0]?.confidence ??
+    payload?.analysis?.candidates?.[0]?.confidence ??
+    null
   );
 }
 
 function normalize(payload: any): Normalized {
-  // New shape
+  // candidates (old shape)
+  const candidates: Normalized["candidates"] = Array.isArray(payload?.candidates)
+    ? payload.candidates.map((c: any) => ({
+        name: String(c?.name ?? ""),
+        confidence: Number(c?.confidence ?? 0),
+      }))
+    : [];
+
+  const confidenceRaw = candidates.length ? candidates[0].confidence : deepFindConfidence(payload);
+  const confidencePct = toPct(confidenceRaw);
+
+  // new shape
   if (payload && (payload.dishName || payload.estimatedNutrition || payload.why || payload.tips)) {
     const p = payload as NewShape;
-
-    const score = Number.isFinite(Number(p.score)) ? Math.round(Number(p.score)) : 0;
-    const labelRaw = String(p.label || "").toLowerCase();
-    const label: Normalized["label"] =
-      labelRaw === "great"
-        ? "Great"
-        : labelRaw === "okay"
-        ? "Okay"
-        : labelRaw === "avoid"
-        ? "Avoid"
-        : "Limit";
+    const score = clampScore(p.score);
+    const nRaw = deepFindNutrition(payload);
+    const nutrition = normalizeNutrition(nRaw);
 
     return {
-      scanId: p.scanId ?? null,
-      dishName: p.dishName ? String(p.dishName) : "Unknown dish",
-      confidencePct: Number.isFinite(Number(p.confidence)) ? Math.round(Number(p.confidence)) : null,
-      score: Math.max(0, Math.min(100, score)),
-      label,
-      why: Array.isArray(p.why) ? p.why.map(String).slice(0, 10) : [],
-      tips: Array.isArray(p.tips) ? p.tips.map(String).slice(0, 10) : [],
-      nutrition: {
-        calories: Number(p.estimatedNutrition?.caloriesKcal ?? undefined),
-        protein_g: Number(p.estimatedNutrition?.proteinG ?? undefined),
-        carbs_g: Number(p.estimatedNutrition?.carbsG ?? undefined),
-        fat_g: Number(p.estimatedNutrition?.fatG ?? undefined),
-        fiber_g: Number(p.estimatedNutrition?.fiberG ?? undefined),
-        sugar_g: Number(p.estimatedNutrition?.sugarG ?? undefined),
-        sodium_mg: Number(p.estimatedNutrition?.sodiumMg ?? undefined),
-      },
+      scanId: String(p.scanId || ""),
+      dishName: String(p.dishName || "Meal"),
+      score,
+      label: String(p.label || "").trim() || undefined,
+      why: String(p.why || ""),
+      tips: Array.isArray(p.tips) ? p.tips.map((x) => String(x)) : [],
+      nutrition,
+      confidencePct,
+      candidates,
     };
   }
 
-  // Old shape
+  // old shape
   const o = (payload || {}) as OldShape;
-  const top = o.candidates?.[0];
-  const score = Number.isFinite(Number(o.rating?.score)) ? Math.round(Number(o.rating?.score)) : 0;
-  const labelRaw = String(o.rating?.label || "").toLowerCase();
-  const label: Normalized["label"] =
-    labelRaw === "great" ? "Great" : labelRaw === "okay" ? "Okay" : "Limit";
+  const rating = o.rating || ({} as any);
+  const score = clampScore(rating.score);
+  const nRaw = deepFindNutrition(payload);
+  const nutrition = normalizeNutrition(nRaw) ?? normalizeNutrition(o.nutrition);
 
   return {
-    scanId: o.scanId ?? null,
-    dishName: top?.name ? String(top.name) : "Unknown dish",
-    confidencePct:
-      top && Number.isFinite(Number(top.confidence))
-        ? Math.round(Number(top.confidence) * 100)
-        : null,
-    score: Math.max(0, Math.min(100, score)),
-    label,
-    why: Array.isArray(o.rating?.reasons) ? o.rating.reasons.map(String).slice(0, 10) : [],
-    tips: Array.isArray(o.rating?.tips) ? o.rating.tips.map(String).slice(0, 10) : [],
-    nutrition: {
-      calories: o.nutrition?.calories,
-      protein_g: o.nutrition?.protein_g,
-      carbs_g: o.nutrition?.carbs_g,
-      fat_g: o.nutrition?.fat_g,
-      fiber_g: o.nutrition?.fiber_g,
-      sugar_g: o.nutrition?.sugar_g,
-      sodium_mg: o.nutrition?.sodium_mg,
-    },
+    scanId: String(o.scanId || ""),
+    dishName: o.candidates?.[0]?.name ? String(o.candidates[0].name) : "Meal",
+    score,
+    label: String(rating.label || "").trim() || undefined,
+    why: Array.isArray(rating.reasons) ? rating.reasons.map(String).join("\n") : "",
+    tips: Array.isArray(rating.tips) ? rating.tips.map(String) : [],
+    nutrition,
+    confidencePct,
+    candidates,
   };
 }
 
 function formatMaybe(n: any, unit: string) {
   if (!Number.isFinite(Number(n))) return "—";
-  const v = Math.round(Number(n));
-  return `${v} ${unit}`;
+  return `${Math.round(Number(n))} ${unit}`;
 }
 
 export default function ScanResultScreen() {
@@ -156,7 +264,34 @@ export default function ScanResultScreen() {
       ? params.photoUri[0]
       : "";
 
-  const { me, activeMember, loading: meLoading, error: meError, refresh: refreshMe } = useMe();
+  const api = useMemo(() => API_BASE, []);
+  const [me, setMe] = useState<any>(null);
+  const [meLoading, setMeLoading] = useState(true);
+  const [meError, setMeError] = useState<string | null>(null);
+  const [activeSegment, setActiveSegment] = useState<"individual" | "family">("individual");
+
+  const refreshMe = useCallback(async () => {
+    try {
+      setMeLoading(true);
+      setMeError(null);
+      const ctx = await getAppContext();
+      const seg = ctx.segment === "family" ? "family" : "individual";
+      setActiveSegment(seg);
+
+      const resp = await fetchMe(seg).catch(() => null);
+      setMe(resp ? { ...(resp as any), mode: seg } : { mode: seg });
+    } catch (e: any) {
+      setMeError(e?.message ?? "Failed to load /v1/me");
+    } finally {
+      setMeLoading(false);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshMe();
+    }, [refreshMe])
+  );
 
   const [busy, setBusy] = useState(true);
   const [raw, setRaw] = useState<unknown>(null);
@@ -170,49 +305,41 @@ export default function ScanResultScreen() {
     return "snack";
   });
 
-  // Build “Log for” list from /v1/me (single source of truth)
+  const [familyMembers, setFamilyMembers] = useState<LogForOption[]>([]);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const ms = await fetchFamilyMembers().catch(() => []);
+      if (!alive) return;
+      const mapped = ms.map((m: any) => ({ id: String(m.id), name: String(m.name ?? m.id) }));
+      setFamilyMembers(mapped);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [me?.mode]);
+
   const logForOptions = useMemo<LogForOption[]>(() => {
     if (!me) return [{ id: "u_self", name: "Me" }];
-  
-    if (me.mode === "family") {
-      const members: LogForOption[] = (me.family?.members || []).map(
-        (m: { id: string; displayName?: string }) => ({
-          id: String(m.id),
-          name: String(m.displayName || m.id),
-        })
-      );
-  
-      return members.length
-        ? members
-        : [{ id: me.userId || "u_self", name: "Me" }];
+    if (String(me.mode) === "family" || activeSegment === "family") {
+      return familyMembers.length ? familyMembers : [{ id: "u_self", name: "Me" }];
     }
-  
-    return [{ id: me.userId || "u_self", name: "Me" }];
-  }, [me]);
-  
+    return [{ id: "u_self", name: "Me" }];
+  }, [me, activeSegment, familyMembers]);
 
   const [logForUserId, setLogForUserId] = useState<string>("u_self");
 
-  // Keep selection valid + default to active family member if present
   useEffect(() => {
-    if (!me) return;
-
-    // Prefer active member if family mode
-    if (me.mode === "family" && activeMember?.id) {
-      setLogForUserId(String(activeMember.id));
-      return;
-    }
-
-    // Otherwise ensure current selection still exists
-    const exists = logForOptions.some(
-      (x: LogForOption) => x.id === logForUserId
-    );    
-
+    const exists = logForOptions.some((x) => x.id === logForUserId);
     if (!exists) setLogForUserId(logForOptions[0]?.id || "u_self");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [me, activeMember?.id, logForOptions]);
+  }, [logForOptions]);
 
   const normalized = useMemo(() => normalize(raw), [raw]);
+  const labelForUi = useMemo(
+    () => deriveLabelFromScore(normalized.score, normalized.label),
+    [normalized.score, normalized.label]
+  );
 
   const analyze = useCallback(async () => {
     if (!photoUri) return;
@@ -221,7 +348,9 @@ export default function ScanResultScreen() {
       setBusy(true);
       setErrorText(null);
 
-      const api = getApiBaseUrl();
+      const ctx = await getAppContext();
+      const actor = localIdToBackendActorId(String((ctx as any)?.currentUserId || "head"));
+
       const form = new FormData();
       form.append(
         "image",
@@ -234,303 +363,281 @@ export default function ScanResultScreen() {
 
       const resp = await fetch(
         `${api}/v1/scans?memberId=${encodeURIComponent(logForUserId ?? "u_self")}`,
-        { method: "POST", body: form }
+        { method: "POST", body: form, headers: { "x-user-id": actor } }
       );
-      
 
       const text = await resp.text();
       let json: any = null;
       try {
         json = JSON.parse(text);
       } catch {
-        throw new Error(`Scan API returned non-JSON: ${text.slice(0, 120)}`);
+        json = text;
       }
 
-      if (!resp.ok) throw new Error(json?.message || json?.error || `Scan failed (${resp.status})`);
+      if (!resp.ok) {
+        setErrorText(typeof json === "string" ? json : json?.message || "Scan failed");
+        return;
+      }
+
       setRaw(json);
     } catch (e: any) {
       setErrorText(e?.message ?? "Scan failed");
-      setRaw(null);
     } finally {
       setBusy(false);
     }
-  }, [photoUri]);
+  }, [api, photoUri, logForUserId]);
 
-  // Analyze once
   useEffect(() => {
     analyze();
   }, [analyze]);
 
   const logMeal = useCallback(async () => {
     try {
-      const api = getApiBaseUrl();
-      const payload = {
-        source: "scan",
-        userId: logForUserId,
-        mealType,
+      if (!normalized?.scanId) {
+        Alert.alert("Missing scan", "Try scanning again.");
+        return;
+      }
 
-        scanId: normalized.scanId,
-        dishName: normalized.dishName,
-        confidence: normalized.confidencePct,
-        score: normalized.score,
-        label: normalized.label,
-        why: normalized.why,
-        tips: normalized.tips,
-        nutrition: normalized.nutrition,
-        photoUri: String(photoUri || ""),
-      };
+      const ctx = await getAppContext();
+      const actor = localIdToBackendActorId(String((ctx as any)?.currentUserId || "head"));
+
+      const whyArr =
+        normalized.why && String(normalized.why).trim()
+          ? String(normalized.why)
+              .split("\n")
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : [];
 
       const resp = await fetch(`${api}/v1/logs`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        headers: { "content-type": "application/json", "x-user-id": actor },
+        body: JSON.stringify({
+          scanId: normalized.scanId,
+          mealType,
+          userId: logForUserId,
+          source: "scan",
+          dishName: normalized.dishName,
+          score: normalized.score,
+          label: labelForUi,
+          confidence: normalized.confidencePct,
+          why: whyArr,
+          tips: normalized.tips || [],
+          nutrition: normalized.nutrition || null,
+          estimatedNutrition: normalized.nutrition || null,
+          photoUri: photoUri || "",
+        }),
       });
 
       const json = await resp.json().catch(() => ({}));
-      if (!resp.ok) throw new Error(json?.message || json?.error || "Log failed");
+      if (!resp.ok) {
+        Alert.alert("Log failed", json?.message || json?.error || "Couldn’t log this meal.");
+        return;
+      }
 
-      Alert.alert("Logged", "Saved to your recent scans.");
-      router.push("/(tabs)/home");
+      router.replace("/(tabs)/recent");
     } catch (e: any) {
-      Alert.alert("Log failed", e?.message ?? "Could not save.");
+      Alert.alert("Log failed", e?.message ?? "Couldn’t log this meal.");
     }
-  }, [mealType, logForUserId, photoUri, router, normalized]);
+  }, [api, normalized, mealType, logForUserId, router, photoUri, labelForUi]);
+
+  const modeDebug = meLoading ? "loading…" : meError ? "error" : String(me?.mode || activeSegment);
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 24 }}>
-      <Text style={styles.title}>Scan Result</Text>
+    <Screen scroll style={{ backgroundColor: Theme.colors.bg }}>
+      <Stack.Screen options={{ ...headerStyles.base, title: "Scan Result" }} />
 
-      {!!photoUri && (
-        <View style={styles.card}>
-          <Text style={styles.cardLabel}>Photo</Text>
-          <Image source={{ uri: String(photoUri) }} style={styles.photo} />
-        </View>
-      )}
-
-      <View style={styles.card}>
-        <Text style={styles.dishName}>{normalized.dishName}</Text>
-        <Text style={styles.sub}>
-          Confidence: {normalized.confidencePct == null ? "—" : `${normalized.confidencePct}%`}
-        </Text>
-
-        <View style={styles.pillRow}>
-          <View
-            style={[
-              styles.pill,
-              normalized.score >= 80
-                ? styles.pillGood
-                : normalized.score >= 60
-                ? styles.pillOk
-                : styles.pillBad,
-            ]}
-          >
-            <Text style={styles.pillText}>
-              {normalized.label} • {normalized.score}/100
-            </Text>
-          </View>
-        </View>
-
-        {busy && <Text style={styles.muted}>Analyzing…</Text>}
-        {errorText && <Text style={styles.error}>Backend scan failed: {errorText}</Text>}
-
-        <Text style={styles.section}>Why</Text>
-        {normalized.why.length ? (
-          normalized.why.map((w, i) => (
-            <Text key={`w-${i}`} style={styles.bullet}>
-              • {w}
-            </Text>
-          ))
-        ) : (
-          <Text style={styles.muted}>—</Text>
-        )}
-
-        <Text style={styles.section}>Tips</Text>
-        {normalized.tips.length ? (
-          normalized.tips.map((t, i) => (
-            <Text key={`t-${i}`} style={styles.bullet}>
-              • {t}
-            </Text>
-          ))
-        ) : (
-          <Text style={styles.muted}>—</Text>
-        )}
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.section}>Estimated nutrition</Text>
-
-        <View style={styles.nRow}>
-          <Text style={styles.nKey}>Calories</Text>
-          <Text style={styles.nVal}>{formatMaybe(normalized.nutrition.calories, "kcal")}</Text>
-        </View>
-        <View style={styles.nRow}>
-          <Text style={styles.nKey}>Protein</Text>
-          <Text style={styles.nVal}>{formatMaybe(normalized.nutrition.protein_g, "g")}</Text>
-        </View>
-        <View style={styles.nRow}>
-          <Text style={styles.nKey}>Carbs</Text>
-          <Text style={styles.nVal}>{formatMaybe(normalized.nutrition.carbs_g, "g")}</Text>
-        </View>
-        <View style={styles.nRow}>
-          <Text style={styles.nKey}>Fat</Text>
-          <Text style={styles.nVal}>{formatMaybe(normalized.nutrition.fat_g, "g")}</Text>
-        </View>
-        <View style={styles.nRow}>
-          <Text style={styles.nKey}>Fiber</Text>
-          <Text style={styles.nVal}>{formatMaybe(normalized.nutrition.fiber_g, "g")}</Text>
-        </View>
-        <View style={styles.nRow}>
-          <Text style={styles.nKey}>Sugar</Text>
-          <Text style={styles.nVal}>{formatMaybe(normalized.nutrition.sugar_g, "g")}</Text>
-        </View>
-        <View style={styles.nRow}>
-          <Text style={styles.nKey}>Sodium</Text>
-          <Text style={styles.nVal}>{formatMaybe(normalized.nutrition.sodium_mg, "mg")}</Text>
-        </View>
-
-        <Text style={styles.mutedSmall}>
-          Nutrition is an estimate from photo analysis. We’ll improve accuracy with portion sizing + user
-          corrections.
-        </Text>
-      </View>
-
-      <Text style={styles.section}>Log as</Text>
-      <View style={styles.segmentRow}>
-        {(["breakfast", "lunch", "dinner", "snack"] as const).map((m) => (
+      <Text style={styles.title}>Log as</Text>
+      <View style={styles.row}>
+        {(["breakfast", "lunch", "dinner", "snack"] as const).map((t) => (
           <Pressable
-            key={m}
-            onPress={() => setMealType(m)}
-            style={[styles.segmentBtn, mealType === m && styles.segmentBtnActive]}
+            key={t}
+            onPress={() => setMealType(t)}
+            style={[styles.pill, mealType === t && styles.pillActive]}
           >
-            <Text style={[styles.segmentText, mealType === m && styles.segmentTextActive]}>
-              {m[0].toUpperCase() + m.slice(1)}
+            <Text style={[styles.pillText, mealType === t && styles.pillTextActive]}>
+              {t[0].toUpperCase() + t.slice(1)}
             </Text>
           </Pressable>
         ))}
       </View>
 
-      <Text style={styles.section}>Log for</Text>
-      <View style={styles.segmentRow}>
-        {logForOptions.map((u: LogForOption) => (
+      <Text style={[styles.title, { marginTop: S.lg }]}>Log for</Text>
+      <View style={styles.row}>
+        {logForOptions.map((u) => (
           <Pressable
             key={u.id}
             onPress={() => setLogForUserId(u.id)}
-            style={[styles.segmentBtn, logForUserId === u.id && styles.segmentBtnActive]}
+            style={[styles.pill, logForUserId === u.id && styles.pillActive]}
           >
-            <Text style={[styles.segmentText, logForUserId === u.id && styles.segmentTextActive]}>
+            <Text style={[styles.pillText, logForUserId === u.id && styles.pillTextActive]}>
               {u.name}
             </Text>
           </Pressable>
         ))}
       </View>
 
-      {/* Helpful debug while wiring /v1/me (remove later) */}
-      <Text style={styles.mutedSmall}>
-        /v1/me:{" "}
-        {meLoading ? "loading…" : meError ? "error" : me?.mode ? `mode=${me.mode}` : "unknown"}{" "}
+      <Text style={styles.debug}>
+        /v1/me: mode={modeDebug}
         {meError ? (
           <>
             {" "}
-            • <Text onPress={refreshMe} style={{ textDecorationLine: "underline" }}>
+            •{" "}
+            <Text onPress={refreshMe} style={{ textDecorationLine: "underline" }}>
               retry
             </Text>
           </>
         ) : null}
       </Text>
 
-      <View style={styles.btnRow}>
-        <Pressable style={styles.primaryBtn} onPress={logMeal} disabled={busy}>
-          <Text style={styles.primaryBtnText}>Log this meal</Text>
-        </Pressable>
+      {photoUri ? (
+        <View style={styles.photoWrap}>
+          <Image source={{ uri: String(photoUri) }} style={styles.photo} />
+        </View>
+      ) : null}
 
-        <Pressable
-          style={styles.secondaryBtn}
-          onPress={() => router.replace("/(tabs)/scan")}
-          disabled={busy}
-        >
-          <Text style={styles.secondaryBtnText}>Scan another</Text>
-        </Pressable>
+      {busy ? (
+        <View style={styles.centerRow}>
+          <ActivityIndicator />
+          <Text style={styles.muted}>Analyzing…</Text>
+        </View>
+      ) : errorText ? (
+        <Text style={styles.err}>{String(errorText)}</Text>
+      ) : (
+        <View style={styles.card}>
+          <Text style={styles.h2}>{normalized.dishName}</Text>
 
-        <Pressable style={styles.ghostBtn} onPress={analyze} disabled={busy}>
-          <Text style={styles.ghostBtnText}>Re-analyze</Text>
-        </Pressable>
-      </View>
-    </ScrollView>
+          <Text style={styles.metaLine}>
+            Confidence: {normalized.confidencePct}% • {labelForUi} • {normalized.score}/100
+          </Text>
+
+          {!!String(normalized.why || "").trim() ? (
+            <Text style={styles.body}>{normalized.why}</Text>
+          ) : (
+            <Text style={styles.muted}>—</Text>
+          )}
+
+          {normalized.tips?.length ? (
+            <View style={{ gap: 6 }}>
+              <Text style={styles.h3}>Tips</Text>
+              {normalized.tips.map((t, i) => (
+                <Text key={`${i}-${t}`} style={styles.bullet}>
+                  • {t}
+                </Text>
+              ))}
+            </View>
+          ) : null}
+
+          <View style={{ gap: 8 }}>
+            <Text style={styles.h3}>Estimated nutrition</Text>
+            {normalized.nutrition ? (
+              <View style={{ gap: 6 }}>
+                <Row k="Calories" v={formatMaybe(normalized.nutrition.calories, "kcal")} />
+                <Row k="Protein" v={formatMaybe(normalized.nutrition.protein_g, "g")} />
+                <Row k="Carbs" v={formatMaybe(normalized.nutrition.carbs_g, "g")} />
+                <Row k="Fat" v={formatMaybe(normalized.nutrition.fat_g, "g")} />
+                <Row k="Fiber" v={formatMaybe(normalized.nutrition.fiber_g, "g")} />
+                <Row k="Sugar" v={formatMaybe(normalized.nutrition.sugar_g, "g")} />
+                <Row k="Sodium" v={formatMaybe(normalized.nutrition.sodium_mg, "mg")} />
+              </View>
+            ) : (
+              <Text style={styles.muted}>—</Text>
+            )}
+          </View>
+        </View>
+      )}
+
+      <Pressable style={styles.primaryBtn} onPress={logMeal} disabled={busy || !!errorText}>
+        <Text style={styles.primaryBtnText}>Log this meal</Text>
+      </Pressable>
+
+      <Pressable
+        style={[styles.secondaryBtn, busy && { opacity: 0.6 }]}
+        onPress={() => router.replace("/(tabs)/scan")}
+        disabled={busy}
+      >
+        <Text style={styles.secondaryBtnText}>Scan another</Text>
+      </Pressable>
+    </Screen>
+  );
+}
+
+function Row({ k, v }: { k: string; v: string }) {
+  return (
+    <View style={styles.rowBetween}>
+      <Text style={styles.rowKey}>{k}</Text>
+      <Text style={styles.rowVal}>{v}</Text>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F5FAFB", paddingHorizontal: 16, paddingTop: 16 },
-  title: { fontSize: 32, fontWeight: "900", color: "#0B2A2F", marginBottom: 10 },
+  title: { fontSize: Theme.font.h1, fontWeight: "900", color: Theme.colors.textPrimary },
+
+  row: { flexDirection: "row", flexWrap: "wrap", gap: S.sm },
+
+  pill: {
+    backgroundColor: Theme.colors.card,
+    borderWidth: 1,
+    borderColor: Theme.colors.chipBorder,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: Theme.radius.pill,
+  },
+  pillActive: { backgroundColor: Theme.colors.tealSoft, borderColor: Theme.colors.tealBorder },
+  pillText: { fontWeight: "900", color: Theme.colors.textPrimary },
+  pillTextActive: { color: Theme.colors.textPrimary },
+
+  debug: { marginTop: 4, color: Theme.colors.textMuted, fontWeight: "700" },
+
+  photoWrap: {
+    borderRadius: Theme.radius.lg,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: Theme.colors.divider,
+    backgroundColor: "#000",
+  },
+  photo: { width: "100%", aspectRatio: 4 / 3, resizeMode: "cover" },
+
+  centerRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  muted: { color: Theme.colors.textMuted, fontWeight: "700" },
+  err: { color: "#B42318", fontWeight: "900" },
 
   card: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 18,
-    padding: 14,
+    backgroundColor: Theme.colors.card,
+    borderRadius: Theme.radius.lg,
+    padding: S.lg,
     borderWidth: 1,
-    borderColor: "#E4EFF1",
-    marginBottom: 12,
+    borderColor: Theme.colors.divider,
+    gap: S.md,
   },
 
-  cardLabel: { fontWeight: "900", color: "#0B2A2F", marginBottom: 8 },
-  photo: { width: "100%", height: 200, borderRadius: 14, backgroundColor: "#000" },
+  h2: { fontSize: Theme.font.h2, fontWeight: "900", color: Theme.colors.textPrimary },
+  h3: { fontSize: Theme.font.h2, fontWeight: "900", color: Theme.colors.textPrimary },
+  body: { color: Theme.colors.textPrimary, fontWeight: "700", lineHeight: 19 },
+  bullet: { color: Theme.colors.textPrimary, fontWeight: "700", lineHeight: 19 },
 
-  dishName: { fontSize: 24, fontWeight: "900", color: "#0B2A2F" },
-  sub: { marginTop: 6, color: "#4A6468", fontWeight: "700" },
+  metaLine: { color: Theme.colors.textMuted, fontWeight: "800" },
 
-  pillRow: { flexDirection: "row", marginTop: 10, marginBottom: 8 },
-  pill: { borderRadius: 999, paddingVertical: 8, paddingHorizontal: 12, borderWidth: 1 },
-  pillGood: { backgroundColor: "#E7FAF3", borderColor: "#BFECDD" },
-  pillOk: { backgroundColor: "#FFF4DF", borderColor: "#F0D3A1" },
-  pillBad: { backgroundColor: "#FFE8E8", borderColor: "#F1B9B9" },
-  pillText: { fontWeight: "900", color: "#0B2A2F" },
+  rowBetween: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  rowKey: { color: Theme.colors.textMuted, fontWeight: "800" },
+  rowVal: { color: Theme.colors.textPrimary, fontWeight: "900" },
 
-  section: { marginTop: 10, fontWeight: "900", color: "#0B2A2F", fontSize: 16 },
-  bullet: { marginTop: 6, color: "#0B2A2F", fontWeight: "700" },
-
-  muted: { marginTop: 10, color: "#4A6468", fontWeight: "700" },
-  mutedSmall: { marginTop: 10, color: "#4A6468", fontWeight: "600", fontSize: 12, lineHeight: 18 },
-
-  error: { marginTop: 10, color: "#B00020", fontWeight: "800" },
-
-  nRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 10 },
-  nKey: { color: "#4A6468", fontWeight: "800" },
-  nVal: { color: "#0B2A2F", fontWeight: "900" },
-
-  btnRow: { gap: 10, marginTop: 6 },
-  primaryBtn: { backgroundColor: "#0E7C86", paddingVertical: 14, borderRadius: 14, alignItems: "center" },
-  primaryBtnText: { color: "#FFFFFF", fontWeight: "900" },
+  primaryBtn: {
+    backgroundColor: Theme.colors.teal,
+    paddingVertical: 16,
+    borderRadius: Theme.radius.lg,
+    alignItems: "center",
+  },
+  primaryBtnText: { color: "#fff", fontWeight: "900", fontSize: 16 },
 
   secondaryBtn: {
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#E4EFF1",
-    paddingVertical: 12,
-    borderRadius: 14,
+    backgroundColor: Theme.colors.card,
+    paddingVertical: 16,
+    borderRadius: Theme.radius.lg,
     alignItems: "center",
-  },
-  secondaryBtnText: { color: "#0B2A2F", fontWeight: "900" },
-
-  ghostBtn: {
-    backgroundColor: "#F1FBFC",
     borderWidth: 1,
-    borderColor: "#CFE8EA",
-    paddingVertical: 12,
-    borderRadius: 14,
-    alignItems: "center",
+    borderColor: Theme.colors.divider,
   },
-  ghostBtnText: { color: "#0B2A2F", fontWeight: "900" },
-
-  segmentRow: { flexDirection: "row", gap: 8, marginTop: 8, flexWrap: "wrap" },
-  segmentBtn: {
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#E4EFF1",
-    backgroundColor: "#FFFFFF",
-  },
-  segmentBtnActive: { backgroundColor: "#E7FAF3", borderColor: "#BFECDD" },
-  segmentText: { fontWeight: "900", color: "#0B2A2F" },
-  segmentTextActive: { color: "#0B2A2F" },
+  secondaryBtnText: { color: Theme.colors.textPrimary, fontWeight: "900", fontSize: 16 },
 });

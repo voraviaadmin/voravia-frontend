@@ -2,7 +2,20 @@ import React, { useCallback, useMemo, useState } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
 import Svg, { Circle } from "react-native-svg";
-import { fetchMe, getApiBaseUrl, MeResponse } from "../../lib/me";
+import { fetchMe, MeResponse } from "../../lib/me";
+import { API_BASE } from "../../lib/api";
+import { getAppContext } from "@/src/storage/appContext";
+import type { ContextScope } from "@/src/context/contextRules";
+
+
+
+// Backwards-compatible helper (older screens still call this)
+export function getApiBaseUrl() {
+  return API_BASE;
+}
+
+
+
 
 type DaySummary = {
   dailyScore?: number;
@@ -348,6 +361,8 @@ export default function HomeScreen() {
 
   const [errorHint, setErrorHint] = useState<string | null>(null);
   const [homeRecos, setHomeRecos] = useState<HomeRecos | null>(null);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [recoFocus, setRecoFocus] = useState<boolean>(false);
 
   const status = useMemo(() => {
     if (scoreToday >= 85) return { text: "Excellent", hint: "Keep the streak going." };
@@ -357,143 +372,102 @@ export default function HomeScreen() {
   }, [scoreToday]);
 
   const ringScore = ringMode === "1d" ? scoreToday : scoreAvg14d;
-  const ringLabel = ringMode === "1d" ? "Daily Score" : hasAvg ? "Avg Score" : "Avg Score";
+  const ringLabel = ringMode === "1d" ? "Daily Score" : "Avg Score";
   const ringSub = ringMode === "1d" ? "Resets nightly" : "Last 14 days";
 
+  
   const load = useCallback(async () => {
-    const api = getApiBaseUrl();
-    setErrorHint(null);
-
-    const window = getMealWindow();
-    setNextWinTitle(window.title);
-
-    let recoFocus: string | null = null;
-    let gotHomeRecosSuggestions = false;
-
-    // 0) /v1/me
-    let meJson: MeResponse;
+    setLoading(true);
+  
+    let gotRecoFocus = false; // local truth for this run
+  
+    const api = API_BASE;
+  
     try {
-      meJson = await fetchMe();
+      const ctx = await getAppContext();
+      setSegment(ctx.segment);
+  
+      const meJson = await fetchMe();
+      const memberId =
+        meJson?.mode === "family"
+          ? String(meJson?.family?.activeMemberId || meJson?.userId || "u_self")
+          : String(meJson?.userId || "u_self");
+  
       setMe(meJson);
-    } catch (e: any) {
-      setMe(null);
-      setErrorHint(e?.message ?? "Could not load /v1/me");
-      return;
-    }
-
-    const userId = meJson.userId || "u_self";
-
-    // 1) /v1/home-recommendations
-    try {
-      const r = await fetch(`${api}/v1/home-recommendations?memberId=${encodeURIComponent(userId)}`, { method: "GET" });
-      const j = await r.json().catch(() => null);
-
-      if (r.ok && j) {
-        setHomeRecos(j);
-
-        if (j?.nextMeal?.focus) {
-          recoFocus = String(j.nextMeal.focus);
-          setFocusText(recoFocus);
+  
+      // 1) /v1/home-recommendations (optional, non-fatal)
+      try {
+        const reco = await fetch(
+          `${api}/v1/home-recommendations?memberId=${encodeURIComponent(memberId)}`,
+          { method: "GET" }
+        );
+        const recoJson = (await reco.json().catch(() => ({}))) as any;
+  
+        if (reco.ok) {
+          setHomeRecos(recoJson);
+          gotRecoFocus = true;           // ✅ set local flag
+          setRecoFocus(true);            // keep state for UI if you need it
+  
+          const nextMeal = String(recoJson?.nextMeal?.focus || "");
+          const nextReason = String(recoJson?.nextMeal?.reason || "");
+  
+          if (nextMeal) setNextWinTitle(nextMeal);
+          if (nextReason) setFocusText(nextReason);
+  
+          const suggestions = Array.isArray(recoJson?.suggestions) ? recoJson.suggestions : [];
+          const base = suggestions
+            .map((s: any) => String(s?.name || "").trim())
+            .filter(Boolean)
+            .slice(0, 3);
+          if (base.length) setNextWinItems(base);
         }
-
-        if (Array.isArray(j?.suggestions) && j.suggestions.length) {
-          gotHomeRecosSuggestions = true;
-
-          let base = j.suggestions
-            .map((s: any) => ({ name: String(s?.name || "").trim(), why: s?.why ? String(s.why) : undefined }))
-            .filter((x: any) => x.name);
-
-          // Option A: tune backend list at late-night
-          if (window.mode === "late_night") {
-            base = base
-              .map((s: any) => ({ ...s, _score: scoreDishForLateNight(s.name) }))
-              .sort((a: any, b: any) => b._score - a._score)
-              .slice(0, 3)
-              .map(({ _score, ...rest }: any) => ({ ...rest, why: rest.why || whyLateNight(rest.name) }));
-          } else {
-            base = base.slice(0, 3);
-          }
-
-          setNextWinItems(base);
-        }
+      } catch {
+        // non-fatal
       }
-    } catch {
-      // non-fatal
-    }
-
-    // 2) /v1/day-summary -> Today score
-    try {
-      const resp = await fetch(`${api}/v1/day-summary?userId=${encodeURIComponent(userId)}`, { method: "GET" });
-      const json = (await resp.json().catch(() => ({}))) as DaySummary;
-
+  
+      // 2) /v1/day-summary
+      const resp = await fetch(
+        `${api}/v1/day-summary?userId=${encodeURIComponent(memberId)}&windowDays=14`,
+        { method: "GET" }
+      );
+      const json = (await resp.json().catch(() => ({}))) as any;
+  
       if (resp.ok) {
         const daily = clampScore(Number(json.dailyScore ?? 0));
+        const avg14 = clampScore(Number(json.avgScore ?? 0));
+  
         setScoreToday(daily);
-
-        if (!recoFocus) {
-          if (daily < 50) setFocusText("Add protein • Add fiber • Lower added sugar");
-          else if (daily < 70) setFocusText("Add fiber • Keep sodium moderate");
-          else setFocusText("Stay balanced • Keep portions consistent");
+        setScoreAvg14d(avg14);
+  
+        // ✅ branch on local flag, not state
+        if (!gotRecoFocus) {
+          if (daily < 50) setFocusText("Try a higher-protein, higher-fiber option next.");
+          else if (daily < 70) setFocusText("A small upgrade next meal will boost your score.");
+          else setFocusText("Keep it up—aim for consistency.");
         }
-
-        const nw = Array.isArray(json.nextWin) && json.nextWin.length ? String(json.nextWin[0]) : "";
-        if (!gotHomeRecosSuggestions && nw) {
-          setNextWinItems([{ name: nw, why: "Quick win for today." }]);
-        }
-      } else {
-        setErrorHint("Home is showing defaults (day-summary not reachable).");
       }
-    } catch {
-      setErrorHint("Home is showing defaults (backend not reachable).");
+    } finally {
+      setLoading(false);
     }
+  }, []);
+  
+  
 
-    // 3) /v1/logs -> streak + avg14d + suggestions fallback
-    try {
-      const resp = await fetch(`${api}/v1/logs?userId=${encodeURIComponent(userId)}`, { method: "GET" });
-      const json = await resp.json().catch(() => ({}));
-      const items: LogItem[] = Array.isArray(json?.items) ? json.items : [];
 
-      // streak
-      const daySet = new Set<string>();
-      for (const it of items) {
-        if (it.day) daySet.add(String(it.day));
-        else if (it.createdAt) daySet.add(isoDay(new Date(it.createdAt)));
-      }
 
-      const today = new Date();
-      let streak = 0;
-      for (let i = 0; i < 60; i++) {
-        const d = subtractDays(today, i);
-        const key = isoDay(d);
-        if (daySet.has(key)) streak += 1;
-        else break;
-      }
-      setStreakDays(streak);
 
-      const avg = computeAvgScoreFromLogs(items, 14);
-      if (avg === null) {
-        setHasAvg(false);
-        setScoreAvg14d(scoreToday);
-      } else {
-        setHasAvg(true);
-        setScoreAvg14d(avg);
-      }
-
-      if (!gotHomeRecosSuggestions) {
-        const sug = buildTimeAwareSuggestions(items, window.key, window.mode);
-        setNextWinItems(sug);
-        setNextWinTitle(window.title);
-      }
-    } catch {
-      // keep as-is
-    }
-  }, [scoreToday]);
-
+  const [segment, setSegment] = useState<ContextScope>("individual");
   useFocusEffect(
     useCallback(() => {
+      (async () => {
+        const ctx = await getAppContext();
+        setSegment((ctx.segment || "individual") as ContextScope);
+      })();
+  
       load();
     }, [load])
   );
+  
 
   const nutritionTotals = homeRecos?.todaySummary?.nutritionTotals ?? null;
 
@@ -503,7 +477,10 @@ export default function HomeScreen() {
         <View>
           <Text style={styles.brand}>Voravia</Text>
           <Text style={styles.subtitle}>Home dashboard (MVP)</Text>
-          {!!me && <Text style={styles.meHint}>Mode: {me.activeProfile === "family" ? "Family" : "Individual"}</Text>}
+          <Text style={styles.meHint}>
+              Mode: {segment === "family" ? "Family" : "Individual"}
+          </Text>
+
         </View>
 
         <View style={styles.streakPill}>
@@ -650,6 +627,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
     borderRadius: 999,
+    marginTop: 50
   },
   streakIcon: { fontSize: 14 },
   streakText: { fontSize: 12, fontWeight: "700", color: "#0B2A2F" },
