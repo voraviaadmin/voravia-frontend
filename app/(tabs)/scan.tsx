@@ -10,18 +10,14 @@ import {
   Image,
   Linking,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
 import { getAppContext } from "@/src/storage/appContext";
 import { fetchMe } from "@/lib/me";
-import { useFocusEffect } from "expo-router";
 
+import { persistImageUri } from "../../lib/persistImage";
 
-/**
- * Expo Camera typing differs across versions. This shim avoids TS errors
- * while still calling the real method at runtime.
- */
 type CameraRef = {
   takePictureAsync: (opts?: any) => Promise<{ uri?: string }>;
 };
@@ -40,29 +36,21 @@ export default function ScanScreen() {
   useFocusEffect(
     useCallback(() => {
       let alive = true;
-  
+
       (async () => {
         const ctx = await getAppContext();
         if (!alive) return;
-  
+
         // Force backend profile to match selected context
-        const force =
-          ctx.segment === "family"
-            ? "family"
-            : "individual"; // workplace -> individual until backend supports it
-  
+        const force = ctx.segment === "family" ? "family" : "individual";
         await fetchMe(force).catch(() => {});
       })();
-  
+
       return () => {
         alive = false;
       };
     }, [])
   );
-  
-
-
-
 
   // Ask for camera permission once on load (only if it can ask again)
   useEffect(() => {
@@ -99,9 +87,9 @@ export default function ScanScreen() {
       const uri = res.assets?.[0]?.uri;
       if (!uri) return;
 
-      // Go straight to result (skip preview) OR show preview—your choice.
-      // We'll show preview for consistency.
-      setPreviewUri(uri);
+      // ✅ persist to app-private storage so it survives iOS restarts
+      const stable = await persistImageUri(uri);
+      setPreviewUri(stable);
     } catch (e: any) {
       Alert.alert("Picker error", e?.message ?? "Failed to pick an image.");
     }
@@ -136,7 +124,10 @@ export default function ScanScreen() {
       });
 
       if (!photo?.uri) throw new Error("No photo uri returned");
-      setPreviewUri(photo.uri);
+
+      // ✅ persist to app-private storage so it survives iOS restarts
+      const stable = await persistImageUri(photo.uri);
+      setPreviewUri(stable);
     } catch (e: any) {
       Alert.alert("Camera error", e?.message ?? "Failed to take photo.");
     } finally {
@@ -147,16 +138,11 @@ export default function ScanScreen() {
   // Permission loading state
   if (!permission) {
     return (
-      <View style={styles.center}>
-        <Text style={styles.title}>Scan</Text>
-        <Text style={styles.sub}>Requesting permissions…</Text>
+      <View style={styles.container}>
+        <Text style={styles.pageTitle}>Scan</Text>
+        <Text style={styles.pageSub}>Requesting permissions…</Text>
 
-        <View style={{ height: 14 }} />
-
-        <Pressable
-          style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
-          onPress={pickFromLibrary}
-        >
+        <Pressable style={styles.secondaryBtn} onPress={pickFromLibrary}>
           <Text style={styles.secondaryBtnText}>Use Photos Instead</Text>
         </Pressable>
       </View>
@@ -167,32 +153,20 @@ export default function ScanScreen() {
   if (previewUri) {
     return (
       <View style={styles.container}>
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.headerTitle}>Preview</Text>
-            <Text style={styles.headerSub}>Looks good? Analyze it.</Text>
-          </View>
-        </View>
+        <Text style={styles.pageTitle}>Preview</Text>
+        <Text style={styles.pageSub}>Looks good? Analyze it.</Text>
 
         <View style={styles.previewCard}>
           <Image source={{ uri: previewUri }} style={styles.previewImg} />
         </View>
 
         <View style={styles.footerRow}>
-          <Pressable
-            style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
-            onPress={() => setPreviewUri(null)}
-            disabled={busy}
-          >
+          <Pressable style={[styles.secondaryBtn, { flex: 1 }]} onPress={() => setPreviewUri(null)}>
             <Text style={styles.secondaryBtnText}>Choose Another</Text>
           </Pressable>
 
           <Pressable
-            style={({ pressed }) => [
-              styles.primaryBtn,
-              pressed && styles.pressed,
-              { flex: 1 },
-            ]}
+            style={[styles.primaryBtn, { flex: 1 }]}
             onPress={() => goToResult(previewUri)}
             disabled={busy}
           >
@@ -200,44 +174,27 @@ export default function ScanScreen() {
           </Pressable>
         </View>
 
-        <Text style={styles.hint}>
-          Tip: On iOS Simulator, use Photos (camera isn’t available).
-        </Text>
+        <Text style={styles.hint}>Tip: On iOS Simulator, use Photos (camera isn’t available).</Text>
       </View>
     );
   }
 
-  /**
-   * IMPORTANT:
-   * Even if camera permission is denied (or simulator), we still show a working “Photos” path.
-   * This prevents getting stuck on simulator.
-   */
+  // No camera permission: still show photos path
   if (!hasPermission) {
     return (
-      <View style={styles.center}>
-        <Text style={styles.title}>Camera access needed</Text>
-        <Text style={styles.sub}>Enable camera permission to scan food.</Text>
+      <View style={styles.container}>
+        <Text style={styles.pageTitle}>Scan</Text>
+        <Text style={styles.pageSub}>Enable camera permission to scan food.</Text>
 
-        <View style={{ height: 12 }} />
-
-        <Pressable
-          style={({ pressed }) => [styles.primaryBtn, pressed && styles.pressed]}
-          onPress={() => requestPermission()}
-        >
+        <Pressable style={styles.primaryBtn} onPress={() => requestPermission()}>
           <Text style={styles.primaryBtnText}>Allow Camera</Text>
         </Pressable>
 
-        <Pressable
-          style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
-          onPress={pickFromLibrary}
-        >
+        <Pressable style={styles.secondaryBtn} onPress={pickFromLibrary}>
           <Text style={styles.secondaryBtnText}>Use Photos Instead</Text>
         </Pressable>
 
-        <Pressable
-          style={({ pressed }) => [styles.ghostBtn, pressed && styles.pressed]}
-          onPress={openSettingsHelp}
-        >
+        <Pressable style={styles.ghostBtn} onPress={openSettingsHelp}>
           <Text style={styles.ghostBtnText}>Help</Text>
         </Pressable>
 
@@ -248,25 +205,20 @@ export default function ScanScreen() {
     );
   }
 
-  // Camera screen (real device, or simulator if it ever supported it)
+  // Camera screen
   return (
     <View style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.headerTitle}>Scan Food</Text>
-          <Text style={styles.headerSub}>Take a photo of your plate</Text>
+      <View style={styles.topRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.pageTitle}>Scan</Text>
+          <Text style={styles.pageSub}>Take a photo of your plate</Text>
         </View>
 
-        <Pressable
-          style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
-          onPress={() => setTorch((t) => (t === "on" ? "off" : "on"))}
-        >
+        <Pressable style={styles.iconBtn} onPress={() => setTorch((t) => (t === "on" ? "off" : "on"))}>
           <Text style={styles.iconBtnText}>{torch === "on" ? "🔦 On" : "🔦 Off"}</Text>
         </Pressable>
       </View>
 
-      {/* Camera */}
       <View style={styles.cameraCard}>
         <CameraView
           ref={(r) => (cameraRef.current = r as any)}
@@ -281,25 +233,12 @@ export default function ScanScreen() {
         </View>
       </View>
 
-      {/* Controls */}
       <View style={styles.footerRow}>
-        <Pressable
-          style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
-          onPress={pickFromLibrary}
-          disabled={busy}
-        >
+        <Pressable style={[styles.secondaryBtn, { flex: 1 }]} onPress={pickFromLibrary} disabled={busy}>
           <Text style={styles.secondaryBtnText}>Photos</Text>
         </Pressable>
 
-        <Pressable
-          style={({ pressed }) => [
-            styles.primaryBtn,
-            pressed && styles.pressed,
-            { flex: 1 },
-          ]}
-          onPress={takePhoto}
-          disabled={busy}
-        >
+        <Pressable style={[styles.primaryBtn, { flex: 1 }]} onPress={takePhoto} disabled={busy}>
           {busy ? (
             <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
               <ActivityIndicator />
@@ -311,53 +250,39 @@ export default function ScanScreen() {
         </Pressable>
       </View>
 
-      <Text style={styles.hint}>
-        If camera permission is blocked (or simulator), use Photos.
-      </Text>
+      <Text style={styles.hint}>If camera permission is blocked (or simulator), use Photos.</Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#F5FAFB",
-    paddingTop: Platform.select({ ios: 64, android: 36, default: 36 }),
-    paddingHorizontal: 16,
-  },
-  header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    marginBottom: 12,
-  },
-  headerTitle: { fontSize: 28, fontWeight: "900", color: "#0B2A2F" },
-  headerSub: { marginTop: 6, color: "#4A6468", fontWeight: "600" },
+  container: { flex: 1, backgroundColor: "#F5FAFB", paddingHorizontal: 16, paddingTop: 16 },
+
+  pageTitle: { fontSize: 32, fontWeight: "900", color: "#0B2A2F" },
+  pageSub: { marginTop: 4, color: "#4A6468", fontWeight: "700" },
+
+  topRow: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
 
   iconBtn: {
     backgroundColor: "#FFFFFF",
     borderWidth: 1,
-    borderColor: "#E4EFF1",
+    borderColor: "#E2EEF0",
     paddingVertical: 10,
     paddingHorizontal: 12,
-    borderRadius: 14,
+    borderRadius: 16,
   },
   iconBtnText: { fontWeight: "900", color: "#0B2A2F" },
 
   cameraCard: {
     height: 420,
-    borderRadius: 18,
+    borderRadius: 16,
     overflow: "hidden",
     borderWidth: 1,
-    borderColor: "#DCECEF",
+    borderColor: "#E2EEF0",
     backgroundColor: "#000",
   },
-  overlay: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingBottom: 18,
-  },
+
+  overlay: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", paddingBottom: 18 },
   scanFrame: {
     width: 290,
     height: 210,
@@ -366,33 +291,25 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.85)",
     backgroundColor: "rgba(255,255,255,0.06)",
   },
-  overlayText: {
-    marginTop: 14,
-    color: "rgba(255,255,255,0.92)",
-    fontSize: 13,
-    fontWeight: "800",
-  },
+  overlayText: { marginTop: 14, color: "rgba(255,255,255,0.92)", fontSize: 13, fontWeight: "800" },
 
   previewCard: {
     flex: 1,
-    borderRadius: 18,
+    borderRadius: 16,
     overflow: "hidden",
     borderWidth: 1,
-    borderColor: "#DCECEF",
+    borderColor: "#E2EEF0",
     backgroundColor: "#000",
+    marginTop: 10,
   },
   previewImg: { width: "100%", height: "100%", resizeMode: "cover" },
 
-  footerRow: {
-    flexDirection: "row",
-    gap: 10,
-    paddingVertical: 12,
-  },
+  footerRow: { flexDirection: "row", gap: 10, paddingTop: 10 },
 
   primaryBtn: {
-    backgroundColor: "#0E7C86",
+    backgroundColor: "#0F766E",
     paddingVertical: 14,
-    borderRadius: 14,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 14,
@@ -402,12 +319,13 @@ const styles = StyleSheet.create({
   secondaryBtn: {
     backgroundColor: "#FFFFFF",
     borderWidth: 1,
-    borderColor: "#E4EFF1",
+    borderColor: "#E2EEF0",
     paddingVertical: 12,
-    borderRadius: 14,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 14,
+    marginTop: 10,
   },
   secondaryBtnText: { color: "#0B2A2F", fontWeight: "900" },
 
@@ -415,31 +333,13 @@ const styles = StyleSheet.create({
     marginTop: 10,
     paddingVertical: 12,
     paddingHorizontal: 14,
-    borderRadius: 14,
+    borderRadius: 16,
     alignItems: "center",
     borderWidth: 1,
-    borderColor: "#CFE8EA",
-    backgroundColor: "#F1FBFC",
+    borderColor: "#D7E9EB",
+    backgroundColor: "rgba(15,118,110,0.06)",
   },
   ghostBtnText: { color: "#0B2A2F", fontWeight: "900" },
 
-  pressed: { opacity: 0.86 },
-
-  center: {
-    flex: 1,
-    backgroundColor: "#F5FAFB",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 16,
-  },
-  title: { fontSize: 22, fontWeight: "900", color: "#0B2A2F" },
-  sub: { marginTop: 8, color: "#4A6468", textAlign: "center" },
-
-  hint: {
-    marginTop: 10,
-    color: "#4A6468",
-    textAlign: "center",
-    fontWeight: "600",
-    lineHeight: 18,
-  },
+  hint: { marginTop: 10, color: "#4A6468", textAlign: "center", fontWeight: "700", lineHeight: 18 },
 });

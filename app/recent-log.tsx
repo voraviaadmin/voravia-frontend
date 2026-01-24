@@ -12,6 +12,10 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 
 import { getAppContext } from "@/src/storage/appContext";
 import { API_BASE } from "../lib/api";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { Theme } from "@/src/ui/theme";
+import { headerStyles } from "@/src/ui/headerStyle";
+
 
 type LogItem = {
   id: string;
@@ -87,6 +91,20 @@ function deriveLabel(item: LogItem, score: number) {
   return "Poor";
 }
 
+
+function normalizeFileUri(uri?: string | null) {
+  if (!uri) return undefined;
+  const s = String(uri);
+  if (s.startsWith("file://")) return s;
+  if (s.startsWith("/")) return `file://${s}`;
+  return s;
+}
+
+
+
+
+
+
 export default function RecentLogDetail() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id?: string }>();
@@ -106,20 +124,19 @@ export default function RecentLogDetail() {
       const ctx = await getAppContext();
       const backendUserId = localIdToBackendId(String((ctx as any)?.currentUserId || "head"));
 
-      const resp = await fetch(`${api}/v1/logs`, {
+      const resp = await fetch(`${api}/v1/logs/${encodeURIComponent(String(id || ""))}`, {
         headers: { "x-user-id": backendUserId },
       });
       const json = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(json?.message || json?.error || `Failed (${resp.status})`);
-
-      const list = Array.isArray(json?.items) ? (json.items as LogItem[]) : [];
       
-      
-      const found = list.find((x) => String(x.id) === String(id));
-      
-      
-      
+      const found = (json?.log ?? json?.item) as LogItem | null;
       if (!found) throw new Error("Log item not found.");
+      
+
+
+
+
       const normalized = {
         ...found,
         nutrition: found?.nutrition ?? found?.estimatedNutrition ?? null,
@@ -174,8 +191,9 @@ export default function RecentLogDetail() {
 
 
   return (
+    <SafeAreaView style={{ flex: 1, backgroundColor: Theme.colors.bg }} edges={["top", "left", "right", "bottom"]}>
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 24 }}>
-      <Text style={styles.title}>Scan Result</Text>
+      <Text style={styles.title}>Log details</Text>
 
       <View style={styles.card}>
         <Text style={styles.cardLabel}>Photo</Text>
@@ -263,11 +281,12 @@ export default function RecentLogDetail() {
         <Text style={styles.ghostBtnText}>Back</Text>
       </Pressable>
     </ScrollView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F3F6F7", padding: 16 },
+  container: { flex: 1, backgroundColor: Theme.colors.bg, padding: 16 },
   center: { alignItems: "center", justifyContent: "center", gap: 10 },
 
   title: { fontSize: 24, fontWeight: "900", marginBottom: 12, color: "#0B1B1D" },

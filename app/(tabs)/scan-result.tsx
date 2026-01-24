@@ -11,14 +11,15 @@ import { getAppContext } from "@/src/storage/appContext";
 import { fetchMe } from "@/lib/me";
 import { fetchFamilyMembers } from "@/lib/family";
 import { API_BASE } from "@/lib/api";
+import { uploadPhotoToBackend } from "@/lib/uploadPhoto";
 
+/** ---- helpers (kept exactly as-is from your file) ---- */
 type OldShape = {
   scanId?: string;
   candidates?: { name: string; confidence: number }[];
   nutrition?: any;
   rating?: { score: number; label?: string; reasons?: string[]; tips?: string[] };
 };
-
 type NewShape = {
   scanId?: string;
   dishName?: string;
@@ -29,7 +30,6 @@ type NewShape = {
   estimatedNutrition?: any;
   nutrition?: any;
 };
-
 type Normalized = {
   scanId: string;
   dishName: string;
@@ -50,8 +50,6 @@ type Normalized = {
   candidates: { name: string; confidence: number }[];
 };
 
-type LogForOption = { id: string; name: string };
-
 function localIdToBackendActorId(id: string) {
   if (!id) return "u_head";
   if (id.startsWith("u_")) return id;
@@ -61,13 +59,11 @@ function localIdToBackendActorId(id: string) {
   if (id === "child2") return "u_child2";
   return "u_head";
 }
-
 function clampScore(x: any) {
   const n = Number(x);
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, Math.min(100, Math.round(n)));
 }
-
 function deriveLabelFromScore(score: number, explicit?: string) {
   const raw = String(explicit || "").trim();
   if (raw) return raw;
@@ -76,7 +72,6 @@ function deriveLabelFromScore(score: number, explicit?: string) {
   if (score >= 40) return "Okay";
   return "Poor";
 }
-
 function looksLikeNutritionObject(x: any) {
   if (!x || typeof x !== "object") return false;
   const keys = Object.keys(x).map((k) => k.toLowerCase());
@@ -99,10 +94,8 @@ function looksLikeNutritionObject(x: any) {
     keys.includes("sugar")
   );
 }
-
 function deepFindNutrition(payload: any, maxDepth = 7) {
   const seen = new Set<any>();
-
   const walk = (node: any, depth: number): any | null => {
     if (!node || depth > maxDepth) return null;
     if (typeof node !== "object") return null;
@@ -133,10 +126,8 @@ function deepFindNutrition(payload: any, maxDepth = 7) {
     }
     return null;
   };
-
   return walk(payload, 0);
 }
-
 function normalizeNutrition(n: any): Normalized["nutrition"] {
   if (!n || typeof n !== "object") return null;
 
@@ -163,13 +154,11 @@ function normalizeNutrition(n: any): Normalized["nutrition"] {
   const hasAny = Object.values(out).some((v) => Number.isFinite(Number(v)));
   return hasAny ? out : null;
 }
-
 function clampPct(n: any) {
   const x = Number(n);
   if (!Number.isFinite(x)) return 0;
   return Math.max(0, Math.min(100, Math.round(x)));
 }
-
 function toPct(maybe: any) {
   if (maybe == null) return 0;
   if (typeof maybe === "string" && maybe.includes("%")) {
@@ -181,7 +170,6 @@ function toPct(maybe: any) {
   if (n > 0 && n <= 1) return clampPct(n * 100);
   return clampPct(n);
 }
-
 function deepFindConfidence(payload: any) {
   return (
     payload?.confidence ??
@@ -195,9 +183,7 @@ function deepFindConfidence(payload: any) {
     null
   );
 }
-
 function normalize(payload: any): Normalized {
-  // candidates (old shape)
   const candidates: Normalized["candidates"] = Array.isArray(payload?.candidates)
     ? payload.candidates.map((c: any) => ({
         name: String(c?.name ?? ""),
@@ -208,7 +194,6 @@ function normalize(payload: any): Normalized {
   const confidenceRaw = candidates.length ? candidates[0].confidence : deepFindConfidence(payload);
   const confidencePct = toPct(confidenceRaw);
 
-  // new shape
   if (payload && (payload.dishName || payload.estimatedNutrition || payload.why || payload.tips)) {
     const p = payload as NewShape;
     const score = clampScore(p.score);
@@ -228,7 +213,6 @@ function normalize(payload: any): Normalized {
     };
   }
 
-  // old shape
   const o = (payload || {}) as OldShape;
   const rating = o.rating || ({} as any);
   const score = clampScore(rating.score);
@@ -247,11 +231,13 @@ function normalize(payload: any): Normalized {
     candidates,
   };
 }
-
 function formatMaybe(n: any, unit: string) {
   if (!Number.isFinite(Number(n))) return "—";
   return `${Math.round(Number(n))} ${unit}`;
 }
+/** ---- end helpers ---- */
+
+type MealType = "breakfast" | "lunch" | "dinner" | "snack";
 
 export default function ScanResultScreen() {
   const router = useRouter();
@@ -265,10 +251,28 @@ export default function ScanResultScreen() {
       : "";
 
   const api = useMemo(() => API_BASE, []);
+
   const [me, setMe] = useState<any>(null);
   const [meLoading, setMeLoading] = useState(true);
   const [meError, setMeError] = useState<string | null>(null);
   const [activeSegment, setActiveSegment] = useState<"individual" | "family">("individual");
+
+  const [mealType, setMealType] = useState<MealType>("breakfast");
+
+  const [logForOptions, setLogForOptions] = useState<{ id: string; name: string }[]>([
+    { id: "u_self", name: "Me" },
+  ]);
+  const [logForUserId, setLogForUserId] = useState<string>("u_self");
+
+  const [busy, setBusy] = useState(true);
+  const [raw, setRaw] = useState<unknown>(null);
+  const [errorText, setErrorText] = useState<string | null>(null);
+
+  const normalized = useMemo(() => normalize(raw), [raw]);
+  const labelForUi = useMemo(
+    () => deriveLabelFromScore(normalized.score, normalized.label),
+    [normalized.score, normalized.label]
+  );
 
   const refreshMe = useCallback(async () => {
     try {
@@ -280,65 +284,32 @@ export default function ScanResultScreen() {
 
       const resp = await fetchMe(seg).catch(() => null);
       setMe(resp ? { ...(resp as any), mode: seg } : { mode: seg });
+
+      if (seg === "family") {
+        const members = await fetchFamilyMembers().catch(() => []);
+        const mapped = (members || []).map((m: any) => ({
+          id: String(m.id),
+          name: String(m.name ?? m.id),
+        }));
+        setLogForOptions(mapped.length ? mapped : [{ id: "u_self", name: "Me" }]);
+        if (mapped.length && !mapped.some((x: any) => x.id === logForUserId)) {
+          setLogForUserId(mapped[0].id);
+        }
+      } else {
+        setLogForOptions([{ id: "u_self", name: "Me" }]);
+        setLogForUserId("u_self");
+      }
     } catch (e: any) {
       setMeError(e?.message ?? "Failed to load /v1/me");
     } finally {
       setMeLoading(false);
     }
-  }, []);
+  }, [logForUserId]);
 
   useFocusEffect(
     useCallback(() => {
       refreshMe();
     }, [refreshMe])
-  );
-
-  const [busy, setBusy] = useState(true);
-  const [raw, setRaw] = useState<unknown>(null);
-  const [errorText, setErrorText] = useState<string | null>(null);
-
-  const [mealType, setMealType] = useState<"breakfast" | "lunch" | "dinner" | "snack">(() => {
-    const h = new Date().getHours();
-    if (h < 11) return "breakfast";
-    if (h < 15) return "lunch";
-    if (h < 21) return "dinner";
-    return "snack";
-  });
-
-  const [familyMembers, setFamilyMembers] = useState<LogForOption[]>([]);
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      const ms = await fetchFamilyMembers().catch(() => []);
-      if (!alive) return;
-      const mapped = ms.map((m: any) => ({ id: String(m.id), name: String(m.name ?? m.id) }));
-      setFamilyMembers(mapped);
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [me?.mode]);
-
-  const logForOptions = useMemo<LogForOption[]>(() => {
-    if (!me) return [{ id: "u_self", name: "Me" }];
-    if (String(me.mode) === "family" || activeSegment === "family") {
-      return familyMembers.length ? familyMembers : [{ id: "u_self", name: "Me" }];
-    }
-    return [{ id: "u_self", name: "Me" }];
-  }, [me, activeSegment, familyMembers]);
-
-  const [logForUserId, setLogForUserId] = useState<string>("u_self");
-
-  useEffect(() => {
-    const exists = logForOptions.some((x) => x.id === logForUserId);
-    if (!exists) setLogForUserId(logForOptions[0]?.id || "u_self");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [logForOptions]);
-
-  const normalized = useMemo(() => normalize(raw), [raw]);
-  const labelForUi = useMemo(
-    () => deriveLabelFromScore(normalized.score, normalized.label),
-    [normalized.score, normalized.label]
   );
 
   const analyze = useCallback(async () => {
@@ -352,14 +323,7 @@ export default function ScanResultScreen() {
       const actor = localIdToBackendActorId(String((ctx as any)?.currentUserId || "head"));
 
       const form = new FormData();
-      form.append(
-        "image",
-        {
-          uri: String(photoUri),
-          name: "scan.jpg",
-          type: "image/jpeg",
-        } as any
-      );
+      form.append("image", { uri: String(photoUri), name: "scan.jpg", type: "image/jpeg" } as any);
 
       const resp = await fetch(
         `${api}/v1/scans?memberId=${encodeURIComponent(logForUserId ?? "u_self")}`,
@@ -409,6 +373,15 @@ export default function ScanResultScreen() {
               .filter(Boolean)
           : [];
 
+
+
+
+      // Upload the photo to the backend and get the URL
+      const remoteUrl = await uploadPhotoToBackend(api, actor, photoUri);
+
+      // Log the meal to the backend with the photo URL//
+
+
       const resp = await fetch(`${api}/v1/logs`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-user-id": actor },
@@ -425,7 +398,7 @@ export default function ScanResultScreen() {
           tips: normalized.tips || [],
           nutrition: normalized.nutrition || null,
           estimatedNutrition: normalized.nutrition || null,
-          photoUri: photoUri || "",
+          photoUri: remoteUrl, // ✅ store backend URL, not file://
         }),
       });
 
@@ -441,72 +414,92 @@ export default function ScanResultScreen() {
     }
   }, [api, normalized, mealType, logForUserId, router, photoUri, labelForUi]);
 
+  // ✅ Recent-compatible header + layout
   const modeDebug = meLoading ? "loading…" : meError ? "error" : String(me?.mode || activeSegment);
 
+
   return (
+
     <Screen scroll style={{ backgroundColor: Theme.colors.bg }}>
-      <Stack.Screen options={{ ...headerStyles.base, title: "Scan Result" }} />
+    <View style={{ height: 28 }} />  
 
-      <Text style={styles.title}>Log as</Text>
-      <View style={styles.row}>
-        {(["breakfast", "lunch", "dinner", "snack"] as const).map((t) => (
-          <Pressable
-            key={t}
-            onPress={() => setMealType(t)}
-            style={[styles.pill, mealType === t && styles.pillActive]}
-          >
-            <Text style={[styles.pillText, mealType === t && styles.pillTextActive]}>
-              {t[0].toUpperCase() + t.slice(1)}
-            </Text>
-          </Pressable>
-        ))}
+      {/* in-content page title (prevents clipping) */}
+      <Text style={styles.pageTitle}>Scan Result</Text>
+      <Text style={styles.pageSub}>Review nutrition, then optionally log.</Text>
+
+      {/* controls in a card (no more giant H1 at top) */}
+      <View style={styles.card}>
+        <Text style={styles.cardLabel}>Log as</Text>
+        <View style={styles.row}>
+          {(["breakfast", "lunch", "dinner", "snack"] as const).map((t) => {
+            const active = mealType === t;
+            return (
+              <Pressable
+                key={t}
+                onPress={() => setMealType(t)}
+                style={[styles.pill, active && styles.pillActive]}
+              >
+                <Text style={[styles.pillText, active && styles.pillTextActive]}>
+                  {t[0].toUpperCase() + t.slice(1)}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <Text style={[styles.cardLabel, { marginTop: 10 }]}>Log for</Text>
+        <View style={styles.row}>
+          {logForOptions.map((u) => {
+            const active = logForUserId === u.id;
+            return (
+              <Pressable
+                key={u.id}
+                onPress={() => setLogForUserId(u.id)}
+                style={[styles.pill, active && styles.pillActive]}
+              >
+                <Text style={[styles.pillText, active && styles.pillTextActive]}>{u.name}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <Text style={styles.debug}>
+          /v1/me: mode={modeDebug}
+          {meError ? (
+            <>
+              {" "}
+              •{" "}
+              <Text onPress={refreshMe} style={{ textDecorationLine: "underline" }}>
+                retry
+              </Text>
+            </>
+          ) : null}
+        </Text>
       </View>
 
-      <Text style={[styles.title, { marginTop: S.lg }]}>Log for</Text>
-      <View style={styles.row}>
-        {logForOptions.map((u) => (
-          <Pressable
-            key={u.id}
-            onPress={() => setLogForUserId(u.id)}
-            style={[styles.pill, logForUserId === u.id && styles.pillActive]}
-          >
-            <Text style={[styles.pillText, logForUserId === u.id && styles.pillTextActive]}>
-              {u.name}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
-
-      <Text style={styles.debug}>
-        /v1/me: mode={modeDebug}
-        {meError ? (
-          <>
-            {" "}
-            •{" "}
-            <Text onPress={refreshMe} style={{ textDecorationLine: "underline" }}>
-              retry
-            </Text>
-          </>
-        ) : null}
-      </Text>
-
+      {/* Photo card */}
       {photoUri ? (
-        <View style={styles.photoWrap}>
-          <Image source={{ uri: String(photoUri) }} style={styles.photo} />
+        <View style={styles.card}>
+          <Text style={styles.cardLabel}>Photo</Text>
+          <View style={styles.photoWrap}>
+            <Image source={{ uri: String(photoUri) }} style={styles.photo} />
+          </View>
         </View>
       ) : null}
 
+      {/* Result card */}
       {busy ? (
         <View style={styles.centerRow}>
           <ActivityIndicator />
           <Text style={styles.muted}>Analyzing…</Text>
         </View>
       ) : errorText ? (
-        <Text style={styles.err}>{String(errorText)}</Text>
+        <View style={styles.card}>
+          <Text style={styles.err}>{String(errorText)}</Text>
+        </View>
       ) : (
         <View style={styles.card}>
           <Text style={styles.h2}>{normalized.dishName}</Text>
-
           <Text style={styles.metaLine}>
             Confidence: {normalized.confidencePct}% • {labelForUi} • {normalized.score}/100
           </Text>
@@ -547,6 +540,7 @@ export default function ScanResultScreen() {
         </View>
       )}
 
+      {/* Actions (no behavior change) */}
       <Pressable style={styles.primaryBtn} onPress={logMeal} disabled={busy || !!errorText}>
         <Text style={styles.primaryBtnText}>Log this meal</Text>
       </Pressable>
@@ -572,7 +566,32 @@ function Row({ k, v }: { k: string; v: string }) {
 }
 
 const styles = StyleSheet.create({
-  title: { fontSize: Theme.font.h1, fontWeight: "900", color: Theme.colors.textPrimary },
+  pageTitle: {
+    fontSize: Theme.font.h1,
+    fontWeight: "900",
+    color: Theme.colors.textPrimary,
+  },
+  pageSub: {
+    marginTop: 2,
+    marginBottom: 8,
+    color: Theme.colors.textMuted,
+    fontWeight: "700",
+  },
+
+  card: {
+    backgroundColor: Theme.colors.card,
+    borderRadius: Theme.radius.lg,
+    padding: S.lg,
+    borderWidth: 1,
+    borderColor: Theme.colors.divider,
+    gap: S.md,
+  },
+
+  cardLabel: {
+    fontSize: 13,
+    fontWeight: "900",
+    color: Theme.colors.textMuted,
+  },
 
   row: { flexDirection: "row", flexWrap: "wrap", gap: S.sm },
 
@@ -588,7 +607,7 @@ const styles = StyleSheet.create({
   pillText: { fontWeight: "900", color: Theme.colors.textPrimary },
   pillTextActive: { color: Theme.colors.textPrimary },
 
-  debug: { marginTop: 4, color: Theme.colors.textMuted, fontWeight: "700" },
+  debug: { marginTop: 2, color: Theme.colors.textMuted, fontWeight: "700" },
 
   photoWrap: {
     borderRadius: Theme.radius.lg,
@@ -599,21 +618,12 @@ const styles = StyleSheet.create({
   },
   photo: { width: "100%", aspectRatio: 4 / 3, resizeMode: "cover" },
 
-  centerRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  centerRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 10 },
   muted: { color: Theme.colors.textMuted, fontWeight: "700" },
   err: { color: "#B42318", fontWeight: "900" },
 
-  card: {
-    backgroundColor: Theme.colors.card,
-    borderRadius: Theme.radius.lg,
-    padding: S.lg,
-    borderWidth: 1,
-    borderColor: Theme.colors.divider,
-    gap: S.md,
-  },
-
   h2: { fontSize: Theme.font.h2, fontWeight: "900", color: Theme.colors.textPrimary },
-  h3: { fontSize: Theme.font.h2, fontWeight: "900", color: Theme.colors.textPrimary },
+  h3: { fontSize: 15, fontWeight: "900", color: Theme.colors.textPrimary },
   body: { color: Theme.colors.textPrimary, fontWeight: "700", lineHeight: 19 },
   bullet: { color: Theme.colors.textPrimary, fontWeight: "700", lineHeight: 19 },
 

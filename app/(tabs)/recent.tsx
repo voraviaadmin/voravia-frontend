@@ -11,9 +11,12 @@ import {
   Alert,
 } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
+
 import { fetchFamilyMembers, FamilyMember } from "../../lib/family";
 import { getAppContext } from "@/src/storage/appContext";
 import { API_BASE } from "../../lib/api";
+import { headerStyles } from "@/src/ui/headerStyle";
+
 
 type LogItem = {
   id: string;
@@ -26,6 +29,7 @@ type LogItem = {
   label?: string;
   photoUri?: string;
 
+  // compat
   rating?: { score?: number; label?: string } | null;
   result?: { score?: number; label?: string } | null;
   ratingScore?: number;
@@ -35,7 +39,9 @@ type LogItem = {
 type MeResponse = {
   userId?: string;
   mode?: "individual" | "family" | "workplace";
-  family?: { members?: Array<{ id: string; name?: string; displayName?: string }> };
+  family?: {
+    members?: Array<{ id: string; name?: string; displayName?: string }>;
+  };
 };
 
 const capitalize = (s?: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : "");
@@ -48,11 +54,7 @@ function fmtTime(iso?: string) {
 }
 
 function isSameDay(a: Date, b: Date) {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
 function getDayBucket(createdAt?: string): "Today" | "Yesterday" | "Earlier" {
@@ -67,16 +69,6 @@ function getDayBucket(createdAt?: string): "Today" | "Yesterday" | "Earlier" {
   if (isSameDay(d, today)) return "Today";
   if (isSameDay(d, yesterday)) return "Yesterday";
   return "Earlier";
-}
-
-function localIdToBackendActorId(id: string) {
-  if (!id) return "u_head";
-  if (id.startsWith("u_")) return id;
-  if (id === "head") return "u_head";
-  if (id === "spouse") return "u_spouse";
-  if (id === "child1") return "u_child1";
-  if (id === "child2") return "u_child2";
-  return "u_head";
 }
 
 function deriveScore(item: LogItem) {
@@ -102,6 +94,18 @@ function deriveLabel(item: LogItem, score: number) {
   return "Poor";
 }
 
+
+function normalizeFileUri(uri?: string | null) {
+  const s = String(uri);
+  /*if (!uri) return undefined;
+  const s = String(uri);
+  if (s.startsWith("file://")) return s;
+  if (s.startsWith("/")) return `file://${s}`;*/
+  if (s.startsWith("http")) return s;
+  return s;
+}
+
+
 export default function RecentScreen() {
   const router = useRouter();
 
@@ -114,14 +118,35 @@ export default function RecentScreen() {
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
+  // ✅ Must come from app context (no demo fallback)
+  const getActorId = useCallback(async () => {
+    const ctx = await getAppContext();
+  
+
+
+    const actor = String((ctx as any)?.currentUserId || "").trim();
+   
+    return actor;
+  }, []);
+
+  // ✅ Prefer /v1/me member names, fallback to /v1/family/members, last resort: userId string
   const userDisplayName = useCallback(
     (userId?: string) => {
       if (!userId) return "Me";
+
+      const id = String(userId);
+
+      const meMembers = me?.family?.members ?? [];
       const fromMe =
-        me?.family?.members?.find((m) => String(m.id) === String(userId))?.displayName ||
-        me?.family?.members?.find((m) => String(m.id) === String(userId))?.name;
+        meMembers.find((m) => String(m.id) === id)?.displayName ||
+        meMembers.find((m) => String(m.id) === id)?.name;
+
       if (fromMe) return fromMe;
-      return family.find((m) => m.id === userId)?.name ?? userId;
+
+      const fromFamily = family.find((m) => String(m.id) === id)?.name;
+      if (fromFamily) return fromFamily;
+
+      return id;
     },
     [family, me]
   );
@@ -130,26 +155,51 @@ export default function RecentScreen() {
     try {
       setError(null);
 
-      const ctx = await getAppContext();
-      const actor = localIdToBackendActorId(String((ctx as any)?.currentUserId || "head"));
+      const actor = await getActorId();
+      if (!actor) {
+        throw new Error("Missing currentUserId in app context (cannot load logs).");
+      }
 
-      const [logsResp, famResp, meResp] = await Promise.all([
+      // Fetch logs + me + family members (all from backend/SQLite)
+      const [logsResp, meResp, famList] = await Promise.all([
         fetch(`${api}/v1/logs`, { method: "GET", headers: { "x-user-id": actor } }),
-        fetchFamilyMembers().catch(() => [] as any),
         fetch(`${api}/v1/me`, { method: "GET", headers: { "x-user-id": actor } }).catch(() => null),
+        fetch(`${api}/v1/family/members`, { method: "GET", headers: { "x-user-id": actor } })
+        .then((r) => (r.ok ? r.json() : []))
+        .catch(() => [] as any),
       ]);
 
       const logsJson = await logsResp.json().catch(() => ({}));
-      if (!logsResp.ok) throw new Error(logsJson?.message || logsJson?.error || `Failed (${logsResp.status})`);
+      if (!logsResp.ok) {
+        throw new Error(logsJson?.message || logsJson?.error || `Failed (${logsResp.status})`);
+      }
 
       const meJson = meResp ? await meResp.json().catch(() => null) : null;
 
-      const list = Array.isArray(logsJson?.items) ? (logsJson.items as LogItem[]) : [];
-      const sorted = list
+      const list = Array.isArray(logsJson?.logs)
+  ? (logsJson.logs as LogItem[])
+  : Array.isArray(logsJson?.items)
+  ? (logsJson.items as LogItem[])
+  : [];
+
+      // ✅ Safety: if backend ever returns broader data, filter to family members in /v1/me when in family mode
+      const allowedUserIds = new Set<string>();
+      const mode = String(meJson?.mode || "");
+      if (mode === "family") {
+        const ids = (meJson?.family?.members ?? []).map((m: any) => String(m?.id)).filter(Boolean);
+        ids.forEach((id: string) => allowedUserIds.add(id));
+      }
+
+      const filtered =
+        mode === "family" && allowedUserIds.size
+          ? list.filter((it) => !it.userId || allowedUserIds.has(String(it.userId)))
+          : list;
+
+      const sorted = filtered
         .slice()
         .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
 
-      setFamily(famResp);
+      setFamily(Array.isArray(famList) ? famList : []);
       setMe(meJson || null);
       setItems(sorted);
     } catch (e: any) {
@@ -160,7 +210,7 @@ export default function RecentScreen() {
       setBusy(false);
       setRefreshing(false);
     }
-  }, [api]);
+  }, [api, getActorId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -174,12 +224,13 @@ export default function RecentScreen() {
     load();
   }, [load]);
 
+  // ✅ Delete API log + delete persisted local photo
   const deleteLog = useCallback(
-    async (logId: string) => {
-      const ctx = await getAppContext();
-      const actor = localIdToBackendActorId(String((ctx as any)?.currentUserId || "head"));
+    async (item: LogItem) => {
+      const actor = await getActorId();
+      if (!actor) throw new Error("Missing currentUserId in app context (cannot delete).");
 
-      const resp = await fetch(`${api}/v1/logs/${encodeURIComponent(logId)}`, {
+      const resp = await fetch(`${api}/v1/logs/${encodeURIComponent(String(item.id))}`, {
         method: "DELETE",
         headers: { "x-user-id": actor },
       });
@@ -187,9 +238,9 @@ export default function RecentScreen() {
       if (!resp.ok) throw new Error(json?.error || json?.message || "Delete failed");
 
       // Optimistic remove
-      setItems((prev) => prev.filter((x) => String(x.id) !== String(logId)));
+      setItems((prev) => prev.filter((x) => String(x.id) !== String(item.id)));
     },
-    [api]
+    [api, getActorId]
   );
 
   const grouped = useMemo(() => {
@@ -200,9 +251,9 @@ export default function RecentScreen() {
     };
     for (const it of items) groups[getDayBucket(it.createdAt)].push(it);
 
-    const byTimeDesc = (a: LogItem, b: LogItem) =>
-      String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
+    const byTimeDesc = (a: LogItem, b: LogItem) => String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
 
+    // Keep family-member ordering stable (if /v1/me provides order)
     const orderBucket = (arr: LogItem[]) => {
       const memberOrder = (me?.family?.members ?? []).map((m) => String(m.id)).filter(Boolean);
       if (!memberOrder.length) return arr.slice().sort(byTimeDesc);
@@ -222,6 +273,7 @@ export default function RecentScreen() {
         buckets.delete(uid);
       }
 
+      // anything not in /v1/me order
       const remainingIds = Array.from(buckets.keys()).sort();
       for (const uid of remainingIds) {
         const list = buckets.get(uid);
@@ -243,8 +295,8 @@ export default function RecentScreen() {
       contentContainerStyle={{ paddingBottom: 24 }}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
-      <Text style={styles.title}>Recent</Text>
-      <Text style={styles.sub}>Your logged meals</Text>
+      <Text style={headerStyles.title}>Recent</Text>
+      <Text style={headerStyles.subtitle}>Your logged meals</Text>
 
       {busy && (
         <View style={{ marginTop: 16 }}>
@@ -265,9 +317,7 @@ export default function RecentScreen() {
       {!busy && !error && items.length === 0 && (
         <View style={styles.card}>
           <Text style={styles.emptyTitle}>No scans logged yet</Text>
-          <Text style={styles.muted}>
-            Go to Scan → analyze a photo → tap “Log this meal”. It will appear here.
-          </Text>
+          <Text style={styles.muted}>Go to Scan → analyze a photo → tap “Log this meal”. It will appear here.</Text>
 
           <Pressable style={styles.primaryBtn} onPress={() => router.push("/(tabs)/scan")}>
             <Text style={styles.primaryBtnText}>Scan now</Text>
@@ -288,8 +338,10 @@ export default function RecentScreen() {
               {list.map((it) => {
                 const score = deriveScore(it);
                 const label = deriveLabel(it, score);
-                const pillStyle =
-                  score >= 80 ? styles.pillGood : score >= 60 ? styles.pillOk : styles.pillBad;
+                const pillStyle = score >= 80 ? styles.pillGood : score >= 60 ? styles.pillOk : styles.pillBad;
+
+                const imgUri = normalizeFileUri(it.photoUri);
+              
 
                 return (
                   <Pressable
@@ -299,7 +351,9 @@ export default function RecentScreen() {
                     onLongPress={() => {
                       Alert.alert(
                         "Delete log?",
-                        `${it.dishName || "Unknown dish"}\n${userDisplayName(it.userId)} · ${capitalize(it.mealType)} · ${fmtTime(it.createdAt)}`,
+                        `${it.dishName || "Unknown dish"}\n${userDisplayName(it.userId)} · ${capitalize(
+                          it.mealType
+                        )} · ${fmtTime(it.createdAt)}`,
                         [
                           { text: "Cancel", style: "cancel" },
                           {
@@ -307,7 +361,7 @@ export default function RecentScreen() {
                             style: "destructive",
                             onPress: async () => {
                               try {
-                                await deleteLog(it.id);
+                                await deleteLog(it);
                               } catch (e: any) {
                                 Alert.alert("Delete failed", e?.message || "Couldn’t delete.");
                               }
@@ -318,12 +372,13 @@ export default function RecentScreen() {
                     }}
                   >
                     <View style={styles.thumbWrap}>
-                      {it.photoUri ? (
-                        <Image source={{ uri: it.photoUri }} style={styles.thumb} />
-                      ) : (
-                        <View style={[styles.thumb, styles.thumbPlaceholder]} />
-                      )}
-                    </View>
+                        {imgUri ? (
+                          <Image source={{ uri: imgUri }} style={styles.thumb} />
+                        ) : (
+                          <Image source={require("../../assets/icon.png")} style={styles.thumb} />
+                          // or: <View style={[styles.thumb, styles.thumbPlaceholder]} />
+                        )}
+                      </View>
 
                     <View style={{ flex: 1 }}>
                       <Text style={styles.rowTitle} numberOfLines={1}>
@@ -354,9 +409,8 @@ export default function RecentScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F5FAFB", paddingHorizontal: 16, paddingTop: 16 },
-  title: { fontSize: 28, fontWeight: "800", color: "#0B2A2F", letterSpacing: 0.2 },
-  sub: { marginTop: 6, color: "#4A6468", fontWeight: "700", marginBottom: 10 },
 
+  
   card: {
     backgroundColor: "white",
     borderRadius: 16,
@@ -384,7 +438,7 @@ const styles = StyleSheet.create({
   },
 
   thumbWrap: { width: 64, height: 64, borderRadius: 14, overflow: "hidden" },
-  thumb: { width: 64, height: 64, borderRadius: 14 },
+  thumb: { width: 56, height: 56, borderRadius: 12 },
   thumbPlaceholder: { backgroundColor: "#EAF4F5" },
 
   rowTitle: { fontSize: 16, fontWeight: "900", color: "#0B2A2F" },

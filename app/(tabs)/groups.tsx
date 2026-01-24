@@ -14,6 +14,7 @@ import { listGroups, Group } from "@/src/storage/groups";
 import { getAppContext, setAppContext } from "@/src/storage/appContext";
 import { patchMe } from "@/src/hooks/useMe";
 import { Theme } from "@/src/ui/theme";
+import { headerStyles } from "@/src/ui/headerStyle";
 import type { ContextScope } from "@/src/context/contextRules";
 import { Screen } from "@/src/ui/Screen";
 import { S } from "@/src/ui/spacing";
@@ -680,62 +681,35 @@ export default function GroupsScreen() {
 
   const renderHeader = () => {
     return (
-      <View style={{ paddingHorizontal: S.lg, paddingTop: 10 }}>
-        <Text style={styles.h1}>Groups</Text>
 
-        <View style={styles.segRow}>
+      
+      <View style={headerStyles.content}>
+        <Text style={headerStyles.title}>Groups</Text>
+
+        <View style={headerStyles.segRow}>
           {availableSegments.map((s) => {
             const active = segment === s;
             return (
               <Pressable
                 key={s}
                 onPress={() => onChangeSegment(s)}
-                style={[styles.segPill, active && styles.segPillOn]}
+                style={[headerStyles.segPill, active && headerStyles.segPillOn]}
               >
-                <Text style={[styles.segText, active && styles.segTextOn]}>{scopeLabel(s)}</Text>
+                <Text style={[headerStyles.segText, active && headerStyles.segTextOn]}>{scopeLabel(s)}</Text>
               </Pressable>
             );
           })}
         </View>
 
-        {/* Simulate chips (dev-only, behind flag) */}
-        {__DEV__ && ENABLE_SIMULATE_CHIPS ? (
-          <View style={styles.simRow}>
-            <Text style={styles.simLabel}>Simulate:</Text>
-            {["head", "spouse", "child1", "child2"].map((id) => {
-              const on = currentUserId === id;
-              return (
-                <Pressable
-                  key={id}
-                  onPress={async () => {
-                    const ctx = await getAppContext();
-                    await setAppContext({ ...ctx, currentUserId: id });
-                    setCurrentUserId(id);
-                    await refreshAll();
-                  }}
-                  style={[styles.simChip, on && styles.simChipOn]}
-                >
-                  <Text style={[styles.simChipText, on && styles.simChipTextOn]}>
-                    {id === "head"
-                      ? "Head"
-                      : id === "spouse"
-                      ? "Spouse"
-                      : id === "child1"
-                      ? "Child 1"
-                      : "Child 2"}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        ) : null}
       </View>
+
     );
   };
 
   const renderBody = () => {
     return (
-      <View style={{ paddingHorizontal: S.lg, paddingBottom: 24 }}>
+      <View style={headerStyles.gcontent}>
+
         {segment !== "family" && segment !== "workplace" ? (
         <ScoreCard
           title="You"
@@ -794,101 +768,103 @@ export default function GroupsScreen() {
           <>
             {/* Create/Join entry points remain intact */}
             {!hasFamilyGroup ? (
-              <View style={styles.noFamilyCard}>
-                <Text style={styles.noFamilyTitle}>No family yet</Text>
-                <Text style={styles.noFamilySub}>
+              <View style={headerStyles.noFamilyCard}>
+                <Text style={headerStyles.noFamilyTitle}>No family yet</Text>
+                <Text style={headerStyles.noFamilySub}>
                   Create one to manage members and log for your family.
                 </Text>
 
                 <Pressable
                   onPress={() => router.push("/groups/create-family")}
-                  style={styles.primaryBtn}
+                  style={headerStyles.primaryBtn}
                 >
-                  <Text style={styles.primaryBtnText}>Create Family</Text>
+                  <Text style={headerStyles.primaryBtnText}>Create Family</Text>
                 </Pressable>
 
                 <Pressable
                   onPress={() => router.push("/groups/join-family")}
-                  style={styles.ghostBtn}
+                  style={headerStyles.ghostBtn}
                 >
-                  <Text style={styles.ghostBtnText}>Join</Text>
+                  <Text style={headerStyles.ghostBtnText}>Join</Text>
                 </Pressable>
               </View>
             ) : null}
 
             {/* Members */}
             {hasFamilyGroup ? (
-              <View style={styles.membersCard}>
+              <View style={headerStyles.card}>
                 <Pressable
                   onPress={() => setMembersExpanded((v) => !v)}
-                  style={styles.membersHeader}
+                  style={headerStyles.membersHeader}
                 >
                   <View>
-                    <Text style={styles.membersTitle}>Members</Text>
-                    <Text style={styles.membersCount}>
+                    <Text style={headerStyles.membersTitle}>Members</Text>
+                    <Text style={headerStyles.membersCount}>
                       {apiFamilyMembers.length} member{apiFamilyMembers.length === 1 ? "" : "s"}
                     </Text>
                   </View>
-                  <Text style={styles.chevSmall}>{membersExpanded ? "▾" : "▸"}</Text>
+                  <Text style={headerStyles.chevSmall}>{membersExpanded ? "▾" : "▸"}</Text>
                 </Pressable>
 
                 {membersExpanded ? (
                   <>
-                    <View style={styles.membersTopRow}>
-                      <Pressable
-                        onPress={() => router.push("/groups/assign-insurance")}
-                        style={styles.smallBtn}
-                      >
-                        <Text style={styles.smallBtnText}>Assign Insurance</Text>
-                      </Pressable>
-
-                      <Pressable
-                        onPress={() => router.push("/groups/invite-family")}
-                        style={styles.smallBtn}
-                      >
-                        <Text style={styles.smallBtnText}>Invite</Text>
-                      </Pressable>
-
-                      <Pressable
-                        onPress={() => router.push("/groups/join-family")}
-                        style={styles.smallBtn}
-                      >
-                        <Text style={styles.smallBtnText}>Join</Text>
-                      </Pressable>
-                    </View>
-
+                    <View style={headerStyles.membersTopRow}>
+                 
                     <Pressable
                       onPress={() => {
                         setAdding((v) => !v);
                         setMemberMsg(null);
                       }}
-                      style={[styles.addMemberBtn, adding && { opacity: 0.9 }]}
+                      style={[headerStyles.smallBtn, adding && { opacity: 0.9 }]}
                     >
-                      <Text style={styles.addMemberBtnText}>{adding ? "Cancel" : "Add Member"}</Text>
+                      <Text style={headerStyles.addMemberBtnText}>{adding ? "Cancel" : "Add Member"}</Text>
                     </Pressable>
 
+                      <Pressable
+                        onPress={() => router.push("/groups/invite-family")}
+                        style={headerStyles.smallBtn}
+                      >
+                        <Text style={headerStyles.smallBtnText}>Invite</Text>
+                      </Pressable>
+
+                      <Pressable
+                        onPress={() => router.push("/groups/join-family")}
+                        style={headerStyles.smallBtn}
+                      >
+                        <Text style={headerStyles.smallBtnText}>Join</Text>
+                      </Pressable>
+
+                      <Pressable
+                        onPress={() => router.push("/groups/assign-insurance")}
+                        style={headerStyles.smallBtn}
+                      >
+                        <Text style={headerStyles.smallBtnText}>Assign Insurance</Text>
+                      </Pressable>
+
+                    </View>
+
                     {adding ? (
-                      <View style={styles.addBox}>
-                        <Text style={styles.label}>Name</Text>
+                      <View style={headerStyles.addBox}>
+                        <Text style={headerStyles.label}>Name</Text>
                         <TextInput
                           value={newName}
                           onChangeText={setNewName}
                           placeholder="e.g., Spouse"
                           placeholderTextColor="rgba(0,0,0,0.45)"
-                          style={styles.input}
+                          style={headerStyles.input}
                         />
 
-                        <Text style={styles.label}>Member type</Text>
+                        <Text style={headerStyles.label}>Member type</Text>
                         <Pressable
                           onPress={() => setNewType(nextMemberType(newType))}
-                          style={styles.typePill}
+                          style={headerStyles.typePill}
                         >
-                          <Text style={styles.typePillText}>{memberTypeLabel(newType)} ▾</Text>
+                          <Text style={headerStyles.typePillText}>{memberTypeLabel(newType)} ▾</Text>
                         </Pressable>
 
-                        <View style={{ flexDirection: "row", gap: 10, marginTop: S.md }}>
-                          <Pressable onPress={createMember} style={styles.primaryBtn}>
-                            <Text style={styles.primaryBtnText}>Create</Text>
+                        <View style={{ flexDirection: "row", gap: 10, marginTop: S.sm }}>
+                          <Pressable onPress={createMember} style={headerStyles.smallBtn}>
+                            <Text style={headerStyles.smallBtnText}>Create</Text>
                           </Pressable>
                           <Pressable
                             onPress={() => {
@@ -896,15 +872,15 @@ export default function GroupsScreen() {
                               setNewName("");
                               setNewType("parent");
                             }}
-                            style={styles.ghostBtn}
+                            style={headerStyles.smallBtn}
                           >
-                            <Text style={styles.ghostBtnText}>Cancel</Text>
+                            <Text style={headerStyles.smallBtnText}>Cancel</Text>
                           </Pressable>
                         </View>
                       </View>
                     ) : null}
 
-                    {memberMsg ? <Text style={styles.memberMsg}>{memberMsg}</Text> : null}
+                    {memberMsg ? <Text style={headerStyles.memberMsg}>{memberMsg}</Text> : null}
 
                     {loadingMembers ? (
                       <View style={{ paddingVertical: S.md }}>
@@ -913,18 +889,18 @@ export default function GroupsScreen() {
                     ) : (
 
 
-                      <View style={styles.memberGrid}>
+                      <View style={headerStyles.memberGrid}>
   {apiFamilyMembers.map((m) => (
-    <View key={m.id} style={styles.memberTile}>
-      <View style={styles.memberTileTop}>
-        <Text style={styles.memberTileName} numberOfLines={1}>
+    <View key={m.id} style={headerStyles.memberTile}>
+      <View style={headerStyles.memberTileTop}>
+        <Text style={headerStyles.memberTileName} numberOfLines={1}>
           {m.name || m.id}
         </Text>
 
         <Pressable
           onPress={() => deleteMember(m.id)}
           hitSlop={10}
-          style={styles.trashBtn}
+          style={headerStyles.trashBtn}
         >
           <Ionicons name="trash-outline" size={18} color="rgba(0,0,0,0.55)" />
         </Pressable>
@@ -936,14 +912,14 @@ export default function GroupsScreen() {
             memberType: nextMemberType(m.memberType || "individual"),
           })
         }
-        style={styles.typePillTiny}
+        style={headerStyles.typePillTiny}
       >
-        <Text style={styles.typePillTinyText}>
+        <Text style={headerStyles.typePillTinyText}>
           {memberTypeLabel(m.memberType)} ▾
         </Text>
       </Pressable>
 
-      <Text style={styles.memberTileMeta} numberOfLines={1}>
+      <Text style={headerStyles.memberTileMeta} numberOfLines={1}>
         INS: {m.insuranceId || "—"} • CORP: {m.corporateId || "—"}
       </Text>
     </View>
@@ -966,7 +942,7 @@ export default function GroupsScreen() {
   };
 
   return (
-    <View style={styles.page}>
+    <View style={headerStyles.page}>
       <FlatList
         data={[{ id: "body" }]}
         keyExtractor={(x) => x.id}
@@ -980,39 +956,9 @@ export default function GroupsScreen() {
 }
 
 const styles = StyleSheet.create({
+  
   page: { flex: 1, backgroundColor: Theme.colors.bg },
 
-  h1: {
-    fontSize: 28,
-    fontWeight: "800",
-    color: "#0B2A2F",
-    letterSpacing: 0.2,
-    marginBottom: 10,
-  },
-
-  segRow: {
-    flexDirection: "row",
-    backgroundColor: "rgba(0,0,0,0.06)",
-    borderRadius: Theme.radius.lg,
-    padding: 6,
-    gap: 6,
-  },
-  segPill: {
-    flex: 1,
-    paddingVertical: S.md,
-    borderRadius: Theme.radius.lg,
-    alignItems: "center",
-  },
-  segPillOn: {
-    backgroundColor: "#0F766E",
-  },
-  segText: {
-    fontWeight: "900",
-    color: "rgba(0,0,0,0.55)",
-  },
-  segTextOn: {
-    color: "white",
-  },
 
   simRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: S.md, flexWrap: "wrap" },
   simLabel: { fontWeight: "900", color: "rgba(0,0,0,0.55)" },

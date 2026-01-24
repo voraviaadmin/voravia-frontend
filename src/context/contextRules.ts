@@ -39,19 +39,12 @@ export function isContextAvailable(
   }
 }
 
-export function clampContext(
-  current: ContextScope | undefined,
-  me?: MeUser | null,
-  opts?: ContextGateOpts
-): ContextScope {
-  if (current && isContextAvailable(current, me, opts)) return current;
-
-  for (const s of CONTEXT_ORDER) {
-    if (isContextAvailable(s, me, opts)) return s;
-  }
-
-  return "individual";
+export function clampContext(scope: ContextScope, eligibility: ContextEligibility): ContextScope {
+  const available = getAvailableContexts(eligibility);
+  if (available.includes(scope)) return scope;
+  return available[0] ?? "individual";
 }
+
 
 /**
  * Centralized eligibility map for UI rendering (Step A).

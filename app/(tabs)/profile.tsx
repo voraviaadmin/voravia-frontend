@@ -17,6 +17,7 @@ import { listUsers, upsertUser, UserProfile } from "@/src/storage/users";
 import { clampContext } from "@/src/context/contextRules";
 import { clearAdminSessionToken } from "../../lib/admin/session";
 import { Theme } from "@/src/ui/theme";
+import { headerStyles } from "@/src/ui/headerStyle";
 
 import type { ContextScope } from "@/src/context/contextRules";
 import LogoutButton from "../../components/LogoutButton";
@@ -294,13 +295,13 @@ const setActiveUser = useCallback(
   }, [profile]);
 
   return (
-    <ScrollView style={styles.page} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>Profile</Text>
-      <Text style={styles.sub}>Health toggles + preferences</Text>
+    <ScrollView style={headerStyles.page} contentContainerStyle={headerStyles.content}>
+      <Text style={headerStyles.title}>Profile</Text>
+      <Text style={headerStyles.subtitle}>Health toggles + preferences</Text>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Health</Text>
-        <Text style={styles.cardSub}>{header}</Text>
+      <View style={headerStyles.card}>
+        <Text style={headerStyles.cardTitle}>Health</Text>
+        <Text style={headerStyles.cardSub}>{header}</Text>
 
         <ToggleRow
           label="Diabetes"
@@ -318,8 +319,8 @@ const setActiveUser = useCallback(
           onPress={() => persist({ ...profile, nafld: !profile.nafld })}
         />
 
-        <Text style={[styles.sectionLabel, { marginTop: 14 }]}>Goal</Text>
-        <View style={styles.chipRow}>
+        <Text style={[headerStyles.sectionLabel, { marginTop: 14 }]}>Goal</Text>
+        <View style={headerStyles.chipRow}>
           {(["Lose", "Maintain", "Gain"] as Goal[]).map((g) => (
             <Chip
               key={g}
@@ -331,14 +332,14 @@ const setActiveUser = useCallback(
         </View>
       </View>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Restaurant preferences</Text>
-        <Text style={styles.cardSub}>
+      <View style={headerStyles.card}>
+        <Text style={headerStyles.cardTitle}>Restaurant preferences</Text>
+        <Text style={headerStyles.cardSub}>
           Primary cuisine (first selected) drives the Eat Out default search.
         </Text>
 
-        <Text style={styles.sectionLabel}>Cuisines</Text>
-        <View style={styles.chipRow}>
+        <Text style={headerStyles.sectionLabel}>Cuisines</Text>
+        <View style={headerStyles.chipRow}>
           {cuisineOptions.map((c) => {
             const isSelected = profile.cuisines.some((x) => x.toLowerCase() === c.toLowerCase());
             const isPrimary = profile.cuisines[0]?.toLowerCase() === c.toLowerCase();
@@ -354,39 +355,39 @@ const setActiveUser = useCallback(
         </View>
 
         <View style={{ height: 12 }} />
-        <Text style={styles.sectionLabel}>Add custom cuisine</Text>
-        <View style={styles.inputRow}>
+        <Text style={headerStyles.sectionLabel}>Add custom cuisine</Text>
+        <View style={headerStyles.inputRow}>
           <TextInput
             value={customCuisine}
             onChangeText={setCustomCuisine}
             placeholder="e.g., Korean BBQ"
             placeholderTextColor="#7b8794"
-            style={styles.input}
+            style={headerStyles.input}
             onSubmitEditing={addCustomCuisine}
             returnKeyType="done"
           />
-          <Pressable style={styles.addBtn} onPress={addCustomCuisine}>
-            <Text style={styles.addBtnText}>Add</Text>
+          <Pressable style={headerStyles.addBtn} onPress={addCustomCuisine}>
+            <Text style={headerStyles.addBtnText}>Add</Text>
           </Pressable>
         </View>
 
         <View style={{ height: 10 }} />
-        <Text style={styles.smallMuted}>
+        <Text style={headerStyles.smallMuted}>
           Selected: {profile.cuisines.length ? profile.cuisines.join(", ") : "None"}
         </Text>
       </View>
 
-      <View style={styles.footerRow}>
-        <Text style={styles.smallMuted}>
+      <View style={headerStyles.footerRow}>
+        <Text style={headerStyles.smallMuted}>
           {Platform.OS === "web" ? "Web preview" : "Mobile preview"}
         </Text>
-        {savedMsg ? <Text style={styles.saved}>{savedMsg}</Text> : null}
+        {savedMsg ? <Text style={headerStyles.saved}>{savedMsg}</Text> : null}
       </View>
 
-      <View style={styles.card}>
-  <Text style={styles.cardTitle}>Membership IDs</Text>
+      <View style={headerStyles.card}>
+  <Text style={headerStyles.cardTitle}>Membership IDs</Text>
 
-  <Text style={styles.cardSub}>
+  <Text style={headerStyles.cardSub}>
     Active user: <Text style={{ fontWeight: "800" }}>{currentUserId}</Text>
   </Text>
 
@@ -413,58 +414,52 @@ const setActiveUser = useCallback(
   ) : null}
 
   <View style={{ marginTop: 12 }}>
-    <Text style={styles.label}>Insurance ID</Text>
+    <Text style={headerStyles.label}>Insurance ID</Text>
     <TextInput
       value={insuranceId}
       onChangeText={setInsuranceId}
       placeholder="e.g., INS-A"
       autoCapitalize="characters"
-      style={styles.input}
+      style={headerStyles.input}
     />
   </View>
 
   <View style={{ marginTop: 12 }}>
-    <Text style={styles.label}>Corporate ID</Text>
+    <Text style={headerStyles.label}>Corporate ID</Text>
     <TextInput
       value={corporateId}
       onChangeText={setCorporateId}
       placeholder="e.g., CORP-X"
       autoCapitalize="characters"
-      style={styles.input}
+      style={headerStyles.input}
     />
   </View>
 
   <View style={{ marginTop: 12, flexDirection: "row", alignItems: "center", gap: 12 }}>
-    <Pressable onPress={onSave} style={[styles.primaryBtn, saving && { opacity: 0.6 }]} disabled={saving}>
-      <Text style={styles.primaryBtnText}>{saving ? "Saving..." : "Save"}</Text>
+    <Pressable onPress={onSave} style={[headerStyles.stprimaryBtn, saving && { opacity: 0.6 }]} disabled={saving}>
+      <Text style={headerStyles.stprimaryBtnText}>{saving ? "Saving..." : "Save"}</Text>
     </Pressable>
 
-    {saveMsg ? <Text style={styles.saved}>{saveMsg}</Text> : null}
+    {saveMsg ? <Text style={headerStyles.saved}>{saveMsg}</Text> : null}
   </View>
 
-  <Text style={styles.hint}>
+  <Text style={headerStyles.hint}>
     These IDs drive rollups in Health Groups. (No backend yet; stored locally.)
   </Text>
 
 
 </View>
 
-
-
     </ScrollView>
-
-
-
-
   );
 }
 
 function ToggleRow({ label, value, onPress }: { label: string; value: boolean; onPress: () => void }) {
   return (
-    <Pressable style={styles.toggleRow} onPress={onPress}>
-      <Text style={styles.toggleLabel}>{label}</Text>
-      <View style={[styles.pill, value ? styles.pillOn : styles.pillOff]}>
-        <Text style={styles.pillText}>{value ? "ON" : "OFF"}</Text>
+    <Pressable style={headerStyles.toggleRow} onPress={onPress}>
+      <Text style={headerStyles.toggleLabel}>{label}</Text>
+      <View style={[headerStyles.pill, value ? headerStyles.pillOn : headerStyles.pillOff]}>
+        <Text style={headerStyles.pillText}>{value ? "ON" : "OFF"}</Text>
       </View>
     </Pressable>
   );
@@ -472,58 +467,17 @@ function ToggleRow({ label, value, onPress }: { label: string; value: boolean; o
 
 function Chip({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
   return (
-    <Pressable style={[styles.chip, active ? styles.chipOn : styles.chipOff]} onPress={onPress}>
-      <Text style={[styles.chipText, active ? styles.chipTextOn : styles.chipTextOff]}>{label}</Text>
+    <Pressable style={[headerStyles.chip, active ? headerStyles.chipOn : headerStyles.chipOff]} onPress={onPress}>
+      <Text style={[headerStyles.chipText, active ? headerStyles.chipTextOn : headerStyles.chipTextOff]}>{label}</Text>
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: Theme.colors.bg},
-  content: { padding: 16, paddingBottom: 28 },
-  title: { fontSize: 28, fontWeight: "800", color: "#0B2A2F", letterSpacing: 0.2 },
-  sub: { marginTop: 6, fontSize: 14, color: "#52606d" },
 
-  primaryBtn: {
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    backgroundColor: Theme.colors.teal,
-    alignSelf: "flex-start",
-  },
-  primaryBtnText: {
-    color: "white",
-    fontWeight: "900",
-  },
   
-
-  card: {
-    marginTop: 14,
-    padding: 14,
-    borderRadius: 14,
-    backgroundColor: Theme.colors.card,
-  },
-  cardTitle: { fontSize: 16, fontWeight: "900" },
-  cardSub: { marginTop: 6, opacity: 0.7 },
-  label: { fontWeight: "800", opacity: 0.8, marginBottom: 6 },
-  input: {
-    borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.12)",
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    backgroundColor: "white",
-  },
-  saveBtn: {
-    backgroundColor: "#0f766e",
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-  },
-  saveBtnText: { color: "white", fontWeight: "900" },
-  saved: { fontWeight: "900", color: "#0f766e" },
-  hint: { marginTop: 10, opacity: 0.6 },
-
+  
+ 
   devRow: { marginTop: 10, flexDirection: "row", gap: 10, alignItems: "center" },
   devChip: {
     paddingVertical: 6,
@@ -534,60 +488,5 @@ const styles = StyleSheet.create({
   devChipActive: { backgroundColor: "#0f766e" },
   devChipText: { fontWeight: "900", color: "rgba(0,0,0,0.65)" },
   devChipTextActive: { color: "white" },
-
-  toggleRow: {
-    marginTop: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 14,
-    backgroundColor: "rgba(255,255,255,0.06)",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  toggleLabel: { color: "#0b1220", fontSize: 14, fontWeight: "700" },
-
-  pill: { paddingVertical: 6, paddingHorizontal: 10, borderRadius: 999 },
-  pillOn: {
-    backgroundColor: "rgba(15,118,110,0.12)",
-    borderWidth: 1,
-    borderColor: "rgba(15,118,110,0.35)",
-  },
-  pillOff: {
-    backgroundColor: "rgba(0,0,0,0.04)",
-    borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.10)",
-  },
-  pillText: { color: "#0b1220", fontSize: 12, fontWeight: "800" },
-
-  sectionLabel: { marginTop: 8, color: "#52606d", fontSize: 12, fontWeight: "800" },
-
-  chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 10 },
-  chip: { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1 },
-  chipOn: {
-    backgroundColor: "rgba(15,118,110,0.12)",
-    borderColor: "rgba(15,118,110,0.35)",
-  },
-  chipOff: { backgroundColor: "white", borderColor: "rgba(0,0,0,0.12)" },
-  chipText: { fontSize: 13, fontWeight: "800" },
-  chipTextOn: { color: "#0b1220" },
-  chipTextOff: { color: "#52606d" },
-
-  inputRow: { flexDirection: "row", gap: 10, marginTop: 10, alignItems: "center" },
-  
-  addBtn: {
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    backgroundColor: "rgba(15,118,110,0.12)",
-    borderWidth: 1,
-    borderColor: "rgba(15,118,110,0.35)",
-  },
-  addBtnText: { color: "#0b1220", fontWeight: "900" },
-  
-  smallMuted: { color: "#52606d", fontSize: 12 },
-
-  footerRow: { marginTop: 14, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-
   
 });

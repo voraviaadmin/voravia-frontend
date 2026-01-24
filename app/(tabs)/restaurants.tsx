@@ -12,6 +12,8 @@ import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getSavedProfile } from "@/src/storage/voraviaStorage";
 import { getMobileLocationOnce, VoraviaLocation } from "@/src/utils/location";
+import { Theme } from "@/src/ui/theme";
+import { headerStyles } from "@/src/ui/headerStyle";
 
 type Place = {
   id: string;

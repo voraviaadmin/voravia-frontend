@@ -18,11 +18,15 @@ export async function fetchFamilyMembers(): Promise<FamilyMember[]> {
   }
 
   // Family mode => only family members list
+
+  
   const json = (await api<any>(`/v1/family/members`, { method: "GET" }).catch(
     () => ({})
   )) as any;
 
   const items = Array.isArray(json?.items) ? json.items : [];
+
+  
 
   return items
     .filter((x: any) => x && typeof x.id === "string")

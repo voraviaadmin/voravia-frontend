@@ -7,6 +7,10 @@ import { clearAppContext } from "@/src/storage/appContext";
 import { clearAdminSessionToken } from "@/lib/admin/session";
 import { headerStyles } from "@/src/ui/headerStyle";
 
+
+
+
+
 function HeaderLogout() {
   const router = useRouter();
 
@@ -85,10 +89,20 @@ export default function TabLayout() {
       />
 
       {/* Hidden routes */}
-      <Tabs.Screen name="scan-result" options={{ href: null }} />
+    {/*  <Tabs.Screen
+  //name="scan-result"
+  //options={{
+    //href: null,
+    //headerShown: true,
+    //headerStyle: { backgroundColor: "lime" },
+   // headerTitle: () => null,
+  //}}
+/>*/}
+
       <Tabs.Screen name="restaurant-details" options={{ href: null }} />
       <Tabs.Screen name="menu-scan" options={{ href: null }} />
       <Tabs.Screen name="menu-results" options={{ href: null }} />
+      <Tabs.Screen name="scan-result" options={{ href: null }} />
     </Tabs>
   );
 }

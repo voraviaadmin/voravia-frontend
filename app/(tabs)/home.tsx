@@ -6,6 +6,8 @@ import { fetchMe, MeResponse } from "../../lib/me";
 import { API_BASE } from "../../lib/api";
 import { getAppContext } from "@/src/storage/appContext";
 import type { ContextScope } from "@/src/context/contextRules";
+import { Theme } from "@/src/ui/theme";
+import { headerStyles } from "@/src/ui/headerStyle";
 
 
 
@@ -475,9 +477,9 @@ export default function HomeScreen() {
     <View style={styles.container}>
       <View style={styles.header}>
         <View>
-          <Text style={styles.brand}>Voravia</Text>
-          <Text style={styles.subtitle}>Home dashboard (MVP)</Text>
-          <Text style={styles.meHint}>
+          <Text style={headerStyles.brand}>Voravia</Text>
+          <Text style={headerStyles.subtitle}>Home dashboard (MVP)</Text>
+          <Text style={headerStyles.meHint}>
               Mode: {segment === "family" ? "Family" : "Individual"}
           </Text>
 
@@ -516,17 +518,17 @@ export default function HomeScreen() {
         </View>
 
         <View style={styles.ctaRow}>
-          <Pressable style={({ pressed }) => [styles.primaryBtn, pressed && styles.pressed]} onPress={() => router.push("/(tabs)/scan")}>
-            <Text style={styles.primaryBtnText}>Scan Food</Text>
-            <Text style={styles.primaryBtnSub}>Camera / Barcode</Text>
+          <Pressable style={({ pressed }) => [headerStyles.primaryBtn, pressed && styles.pressed]} onPress={() => router.push("/(tabs)/scan")}>
+            <Text style={headerStyles.primaryBtnText}>Scan Food</Text>
+            <Text style={headerStyles.primaryBtnSub}>Camera / Barcode</Text>
           </Pressable>
 
           <Pressable
-            style={({ pressed }) => [styles.secondaryBtn, pressed && styles.pressed]}
+            style={({ pressed }) => [headerStyles.secondaryBtn, pressed && styles.pressed]}
             onPress={() => router.push({ pathname: "/(tabs)/restaurants", params: { autostart: "1" } })}
           >
-            <Text style={styles.secondaryBtnText}>Find Restaurant</Text>
-            <Text style={styles.secondaryBtnSub}>Nearby + menus</Text>
+            <Text style={headerStyles.secondaryBtnText}>Find Restaurant</Text>
+            <Text style={headerStyles.secondaryBtnSub}>Nearby + menus</Text>
           </Pressable>
         </View>
       </View>
@@ -613,9 +615,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: 14,
   },
-  brand: { fontSize: 28, fontWeight: "800", color: "#0B2A2F", letterSpacing: 0.2 },
-  subtitle: { marginTop: 4, fontSize: 13, color: "#4A6468" },
-  meHint: { marginTop: 6, fontSize: 12, color: "#6B8387", fontWeight: "700" },
+  
 
   streakPill: {
     flexDirection: "row",
@@ -680,21 +680,7 @@ const styles = StyleSheet.create({
   statusHint: { marginTop: 6, fontSize: 13, color: "#4A6468", textAlign: "center" },
 
   ctaRow: { flexDirection: "row", gap: 10, marginTop: 10 },
-  primaryBtn: { flex: 1, backgroundColor: "#0E7C86", borderRadius: 14, paddingVertical: 14, paddingHorizontal: 12 },
-  primaryBtnText: { color: "#FFFFFF", fontWeight: "800", fontSize: 14 },
-  primaryBtnSub: { marginTop: 4, color: "rgba(255,255,255,0.85)", fontSize: 12, fontWeight: "600" },
-
-  secondaryBtn: {
-    flex: 1,
-    backgroundColor: "#F1FBFC",
-    borderRadius: 14,
-    paddingVertical: 14,
-    paddingHorizontal: 12,
-    borderWidth: 1,
-    borderColor: "#CFE8EA",
-  },
-  secondaryBtnText: { color: "#0B2A2F", fontWeight: "800", fontSize: 14 },
-  secondaryBtnSub: { marginTop: 4, color: "#4A6468", fontSize: 12, fontWeight: "600" },
+  
 
   pressed: { opacity: 0.88 },
 

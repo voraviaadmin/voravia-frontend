@@ -13,11 +13,25 @@ import { clampContext, getContextEligibility, getAvailableContexts } from "@/src
 // Optional: keep backend /v1/me in sync when choosing context
 import { patchMe } from "@/src/hooks/useMe";
 import { getAdminSessionToken } from "../lib/admin/session";
-
+import { Theme } from "@/src/ui/theme";
+import { headerStyles } from "@/src/ui/headerStyle";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { ScrollView } from "react-native";
 
 function firstParam(v: string | string[] | undefined): string | undefined {
   if (Array.isArray(v)) return v[0];
   return v;
+}
+
+function normalizeActorId(id: any): string {
+  const s = String(id ?? "").trim();
+  if (!s) return "u_head";
+  if (s === "head") return "u_head";
+  if (s === "spouse") return "u_spouse";
+  if (s === "child1") return "u_child1";
+  if (s === "child2") return "u_child2";
+  if (s === "self") return "u_self";
+  return s;
 }
 
 export default function ContextGate() {
@@ -28,64 +42,44 @@ export default function ContextGate() {
 
   const [loading, setLoading] = useState(true);
   const [users, setUsers] = useState<UserProfile[]>([]);
-  const [currentUserId, setCurrentUserId] = useState<string>("head");
+  const [currentUserId, setCurrentUserId] = useState<string>("u_head");
   const [hasFamilyGroup, setHasFamilyGroup] = useState(false);
   const tRaw = firstParam(params.t);
 
-  const me = useMemo(
-    () => users.find((u) => u.id === currentUserId) ?? null,
-    [users, currentUserId]
-  );
+  const me = useMemo(() => users.find((u) => u.id === currentUserId) ?? null, [users, currentUserId]);
 
-  const eligibility = useMemo(() => {
-    return getContextEligibility(me, { hasFamilyGroup });
-  }, [me, hasFamilyGroup]);
+  const eligibility = useMemo(() => getContextEligibility(me, { hasFamilyGroup }), [me, hasFamilyGroup]);
 
-  const available = useMemo(() => {
-    return getAvailableContexts(eligibility);
-  }, [eligibility]);
+  const available = useMemo(() => getAvailableContexts(eligibility), [eligibility]);
 
-  const options = useMemo(() => {
-    const meta: Record<ContextScope, { title: string; sub: string }> = {
-      individual: { title: "Individual", sub: "Your personal score, streaks, and recommendations" },
-      family: { title: "Family", sub: "Shared score + household members" },
-      workplace: { title: "Workplace", sub: "Company aggregate insights (N-1)" },
-    };
+  const active = useMemo<ContextScope>(() => {
+    const t = tRaw ? String(tRaw) : undefined;
+    return clampContext((t as any) || "individual", eligibility);
+  }, [tRaw, eligibility]);
 
-    return available.map((scope) => ({
-      scope,
-      title: meta[scope].title,
-      sub: meta[scope].sub,
-    }));
-  }, [available]);
-
-  // Load persisted context + seed state
   useEffect(() => {
     let alive = true;
 
-    
-
     (async () => {
-      
-       // 🔐 ADMIN SESSION CHECK (HIGHEST PRIORITY)
-       const adminToken = await getAdminSessionToken();
-       if (adminToken) {
-         router.replace("/admin");
-         return;
-       }
-      
-      
+      // 🔐 ADMIN SESSION CHECK (HIGHEST PRIORITY)
+      const adminToken = await getAdminSessionToken();
+      if (adminToken) {
+        router.replace("/admin");
+        return;
+      }
+
       const ctx = await getAppContext();
       const us = await listUsers();
       const gs = await listGroups();
-      const hasFam = gs.some((g) => g.type === "Family");
-      
 
+      const resolvedUserId = normalizeActorId(ctx.currentUserId ?? "u_head");
+      const resolvedMe = us.find((u) => u.id === resolvedUserId) ?? null;
+
+      // Family can be determined either by groups OR by user.familyId
+      const hasFamGroup = gs.some((g) => g.type === "Family");
+      const hasFam = hasFamGroup || Boolean(resolvedMe?.familyId);
 
       if (!alive) return;
-
-      const resolvedUserId = ctx.currentUserId ?? "head";
-      const resolvedMe = us.find((u) => u.id === resolvedUserId) ?? null;
 
       setUsers(us);
       setCurrentUserId(resolvedUserId);
@@ -97,18 +91,12 @@ export default function ContextGate() {
         return;
       }
 
-    
-      const elig = getContextEligibility(resolvedMe, { hasFamilyGroup: hasFam });
-      const saved = (ctx.segment ?? "individual") as ContextScope;
-
-      if (elig[saved]) {
+      // If only one context is available, skip gate
+      if (available.length <= 1) {
+        setLoading(false);
         router.replace("/(tabs)/home");
         return;
       }
-
-      // Otherwise clamp to first eligible and save
-      const nextScope = clampContext(saved, resolvedMe, { hasFamilyGroup: hasFam });
-      await setAppContext({ segment: nextScope, currentUserId: resolvedUserId });
 
       setLoading(false);
     })();
@@ -116,17 +104,19 @@ export default function ContextGate() {
     return () => {
       alive = false;
     };
-  }, [forceShow, tRaw]); // t helps force a remount-like re-run
+    // NOTE: available is derived from eligibility, which depends on me/hasFamilyGroup
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forceShow]);
 
   const choose = useCallback(
     async (scope: ContextScope) => {
-      await setAppContext({ segment: scope, currentUserId });
+      const nextScope = scope;
+      await setAppContext({ segment: nextScope, currentUserId });
 
       // Best-effort: keep backend truth aligned too
-      patchMe({ mode: scope as any }).catch(() => {});
+      patchMe({ mode: nextScope as any }).catch(() => {});
 
       router.replace("/(tabs)/home");
-
     },
     [currentUserId]
   );
@@ -134,74 +124,67 @@ export default function ContextGate() {
   if (loading) {
     return (
       <View style={styles.container}>
-        <Text style={styles.title}>Voravia</Text>
-        <Text style={styles.sub}>Loading…</Text>
+        <Text style={styles.title}>Loading…</Text>
       </View>
     );
   }
 
   return (
+    <SafeAreaView style={{ flex: 1, backgroundColor: Theme.colors.bg }} edges={["top", "left", "right"]}>
+    <ScrollView
+      contentContainerStyle={{ padding: 16, paddingBottom: 32, backgroundColor: Theme.colors.bg }}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+    >
+
     <View style={styles.container}>
       <Text style={styles.title}>Choose your context</Text>
       <Text style={styles.sub}>This sets where you land and what you can see.</Text>
 
-      <View style={{ height: 12 }} />
-
-      {options.map((o) => (
-        <Pressable key={o.scope} onPress={() => choose(o.scope)} style={styles.card}>
-          <Text style={styles.cardTitle}>{o.title}</Text>
-          <Text style={styles.cardSub}>{o.sub}</Text>
+      {available.includes("individual") && (
+        <Pressable style={styles.card} onPress={() => choose("individual")}>
+          <Text style={styles.cardTitle}>Individual</Text>
+          <Text style={styles.cardSub}>Your personal score, streaks, and recommendations</Text>
         </Pressable>
-      ))}
+      )}
 
-      <View style={{ height: 14 }} />
+      {available.includes("family") && (
+        <Pressable style={styles.card} onPress={() => choose("family")}>
+          <Text style={styles.cardTitle}>Family</Text>
+          <Text style={styles.cardSub}>Log and view meals for your family members</Text>
+        </Pressable>
+      )}
 
-      <Pressable onPress={() => router.replace("/(tabs)/profile")} style={styles.secondaryBtn}>
-        <Text style={styles.secondaryBtnText}>Edit membership IDs</Text>
+      {available.includes("workplace") && (
+        <Pressable style={styles.card} onPress={() => choose("workplace")}>
+          <Text style={styles.cardTitle}>Workplace</Text>
+          <Text style={styles.cardSub}>See aggregated workplace insights (if enabled)</Text>
+        </Pressable>
+      )}
+
+      <View style={{ height: 12 }} />
+      <Pressable style={styles.secondaryBtn} onPress={() => router.push("/admin")}>
+        <Text style={styles.secondaryBtnText}>Admin Console</Text>
       </Pressable>
 
-      <Pressable
-        onPress={() => router.replace("/admin/login")}
-        style={{ padding: 14, borderRadius: 12, borderWidth: 1, marginTop: 12 }}
-      >
-        <Text style={{ textAlign: "center" }}>Admin Console</Text>
-      </Pressable>
-
-
-      {__DEV__ ? (
-        <Text style={styles.devNote}>
-          DEV: Eligibility depends on current user’s familyId/corporateId (and Family group fallback).
-          {"\n"}force={String(forceRaw)} (forceShow={String(forceShow)})
-        </Text>
-      ) : null}
+      <Text style={styles.footer}>
+        DEV: Eligibility depends on current user’s familyId/corporateId and Family group fallback.
+        {"\n"}force=1 (forceShow=true)
+      </Text>
     </View>
+    </ScrollView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16, justifyContent: "center" },
-  title: { fontSize: 22, fontWeight: "900" },
-  sub: { marginTop: 6, opacity: 0.7 },
-
-  card: {
-    marginTop: 10,
-    padding: 14,
-    borderRadius: 14,
-    backgroundColor: "rgba(0,0,0,0.04)",
-  },
-  cardTitle: { fontSize: 16, fontWeight: "900" },
-  cardSub: { marginTop: 6, opacity: 0.75, lineHeight: 18 },
-
-  secondaryBtn: {
-    alignSelf: "flex-start",
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    backgroundColor: "rgba(15,118,110,0.12)",
-    borderWidth: 1,
-    borderColor: "rgba(15,118,110,0.35)",
-  },
-  secondaryBtnText: { fontWeight: "900", color: "#0f766e" },
-
-  devNote: { marginTop: 12, fontSize: 12, opacity: 0.65 },
+  container: { flex: 1, padding: 16, backgroundColor: "#fff" },
+  title: { fontSize: 22, fontWeight: "800", marginBottom: 6 },
+  sub: { fontSize: 13, opacity: 0.7, marginBottom: 16 },
+  card: { padding: 14, borderRadius: 14, backgroundColor: "#f2f2f2", marginBottom: 12 },
+  cardTitle: { fontSize: 16, fontWeight: "800" },
+  cardSub: { fontSize: 12, opacity: 0.7, marginTop: 4 },
+  secondaryBtn: { padding: 12, borderRadius: 12, borderWidth: 1, borderColor: "#ddd", alignItems: "center" },
+  secondaryBtnText: { fontWeight: "700" },
+  footer: { marginTop: 12, fontSize: 11, opacity: 0.6 },
 });
